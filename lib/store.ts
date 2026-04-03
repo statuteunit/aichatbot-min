@@ -53,3 +53,30 @@ function createChat(model: string): Chat {
   chats.set(id, chat)
   return chat
 }
+
+// 获取所有对话
+export function getAllChats(): Chat[] {
+  // 按时间戳降序
+  return Array.from(chats.values()).sort((a,b)=>b.updatedAt.getTime()-a.updatedAt.getTime())
+}
+
+// 获取单个对话
+export function getChatById(id:string):Chat|undefined{
+  return chats.get(id)
+}
+
+// 更新对话标题
+export function updateChatTitle(id:string,title:string){
+  const chat=getChatById(id)
+  if(chat){
+    chat.title=title
+    chat.updatedAt=new Date()
+  }
+}
+
+// 删除对话
+export function deleteChat(id:string){
+  chats.delete(id)
+  
+  messages.delete(id)
+}
