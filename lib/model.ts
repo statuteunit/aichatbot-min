@@ -16,8 +16,8 @@ export const chatModels: ChatModel[] = [
         description: 'Meta 的开源模型，适合通用对话',
     },
     {
-        id: 'Qwen2.5',
-        name: 'Qwen 2.5',
+        id: 'qwen2.5:7b',
+        name: 'qwen 2.5:7b',
         provider: 'ollama',
         description: '阿里云开源模型，中文能力强',
     },
@@ -28,13 +28,13 @@ export const chatModels: ChatModel[] = [
         description: '推理能力强，适合复杂任务',
     },
     {
-        id: 'mistral',
-        name: 'Mistral',
+        id: 'llava:7b',
+        name: 'llava:7b',
         provider: 'ollama',
         description: '欧洲开源模型，性能优秀',
     },
 ]
 
-export function getModelById(id:string):ChatModel{
-    return chatModels.find(model=>model.id===id)??chatModels[0]
+export function getModelById(id: string): ChatModel {
+    return chatModels.find(model => model.id === id) ?? chatModels[0]
 }
