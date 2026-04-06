@@ -16,15 +16,26 @@ export function Siderbar({ isOpen, onClose, onNewChat, onSelectChat, currentChat
   const [chats, setChats] = useState([])
   // 获取对话列表
   const loadChats = async () => {
-    const response = await fetch('/api/chats')
-    const data = await response.json()
-    setChats(data)
+    try {
+      const response = await fetch('/api/chats')
+      if (!response.ok) return
+      const data = await response.json()
+      setChats(data)
+    } catch (e) {
+    }
   }
 
   // 组件挂在时加载对话记录
   useEffect(() => {
     loadChats()
   }, [])
+
+  // 打开对话列表时重新请求对话列表
+  useEffect(() => {
+    if (isOpen) {
+      loadChats()
+    }
+  }, [isOpen])
 
   return (
     <>

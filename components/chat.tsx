@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button"
 export function Chat() {
     // 选择模型状态
     const [selectedModelId, setSelectedModelId] = useState(DEFAULT_CHAT_MODEL)
-    const { messages, input, setInput, isLoading, append, reload, stop } = useChat({ model: selectedModelId })
+    const { messages, input, setInput, isLoading, append, reload, stop, setMessages } = useChat({ model: selectedModelId })
     const [isOpen, setIsOpen] = useState(false)
     const [currentChatId, setCurrentChatId] = useState<string | null>(null)
 
@@ -26,20 +26,44 @@ export function Chat() {
         document.cookie = `selectedModel=${modelId}; path=/; max-age=31536000`
     }
 
-    const onClose = () => {
-        setIsOpen(false)
+    const onToggleOpen = () => {
+        setIsOpen(!isOpen)
     }
 
-    const onNewChat = () => {
-        setIsOpen(true)
-        setCurrentChatId(null)
+    const onNewChat = async () => {
+        // 中断当前对话
+        stop()
         setInput('')
-        reload()
+        setMessages([])
+        const res = await fetch('/api/chats', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: selectedModelId })
+        })
+        if (!res.ok) return
+        const chat = await res.json()
+        setCurrentChatId(chat.id)
+        setIsOpen(false)
     }
 
-    const onSelectChat = (chatId: string) => {
-        setCurrentChatId(chatId)
-        setIsOpen(false)
+    const onSelectChat = async (chatId: string) => {
+        try {
+            // 中断当前流
+            stop()
+            const res = await fetch(`/api/chats/${chatId}`)
+            if (!res.ok) return
+            // 获取该id下的历史记录
+            const chat = await res.json()
+            setMessages(chat.messages || [])
+            setCurrentChatId(chatId)
+            if (chat?.model) {
+                setSelectedModelId(chat.model)
+                document.cookie = `selectedModel=${chat.model}; path=/; max-age=31536000`
+            }
+            setIsOpen(false)
+        } catch (e) {
+
+        }
     }
 
     return (
@@ -52,14 +76,14 @@ export function Chat() {
 
             {/* 控制侧边栏 */}
             <div className="flex justify-end p-4">
-                <Button onClick={onNewChat} className="w-full" variant="outline">
-                    + 新建对话
+                <Button onClick={onToggleOpen} className="w-full" variant="outline">
+                    +
                 </Button>
             </div>
             {/* 侧边栏 */}
             <Siderbar
                 isOpen={isOpen}
-                onClose={onClose}
+                onClose={onToggleOpen}
                 onNewChat={onNewChat}
                 onSelectChat={onSelectChat}
                 currentChatId={currentChatId}

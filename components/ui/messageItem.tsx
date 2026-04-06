@@ -90,7 +90,7 @@ export function MessageItem({ message }: MessageItemProps) {
       >
         {/* 角色标签 */}
         <div className="text-xs opacity-70 mb-1">
-          {isUser ? '你' : 'AI'}
+          {isUser ? 'you' : 'AI'}
         </div>
 
         {/* 消息内容 */}

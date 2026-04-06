@@ -3,7 +3,7 @@
 import { useState, useCallback } from "react"
 import { Message, ChatCompletionMessage } from "@/types/chat"
 import { generateId } from "@/lib/utils"
-import { getMessagesByChatId, addMessage } from "@/lib/store"
+// import { getMessagesByChatId, addMessage } from "@/lib/store"
 
 // 发送对话的配置项
 interface UseChatOptions {
@@ -23,6 +23,7 @@ interface UseChatReturn {
     append: (content: string) => Promise<void>//发送用户问题接收ai回复内容
     reload: () => void//重置
     stop: () => void//停止发送
+    setMessages: (messages: Message[]) => void//设置消息记录
 }
 
 export function useChat(options: UseChatOptions = {}): UseChatReturn {
@@ -35,12 +36,13 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
 
     // 异步初始化消息记录当前对话的
     // 如果有 chatId，从存储加载消息
-    const [messages, setMessages] = useState<Message[]>(() => {
-        if (chatId) {
-            return getMessagesByChatId(chatId);
-        }
-        return [];
-    });
+    // const [messages, setMessages] = useState<Message[]>(() => {
+    //     if (chatId) {
+    //         return getMessagesByChatId(chatId);
+    //     }
+    //     return [];
+    // });
+    const [messages, setMessages] = useState<Message[]>(initialMessages)
     // 发送消息，请求方法不需要每次渲染都重新创建，只需要变更模型，接口，发送内容时重新创建即可
     const append = useCallback(async (content: string) => {
         if (!content.trim()) return;
@@ -71,10 +73,10 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
         setAbortController(abortController)
 
         // 添加消息
-        if (chatId) {
-            addMessage(chatId, userMessage)
-            addMessage(chatId, assistantMessage)
-        }
+        // if (chatId) {
+        //     addMessage(chatId, userMessage)
+        //     addMessage(chatId, assistantMessage)
+        // }
 
         // 发送请求
         try {
@@ -179,6 +181,7 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
         append,
         setInput,
         reload,
-        stop
+        stop,
+        setMessages
     }
 }
