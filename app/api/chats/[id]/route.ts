@@ -5,9 +5,10 @@ import { getChatById, getMessagesByChatId, deleteChat, updateChatTitle } from "@
 // 第二个参数是获取动态路由的固定写法，{params}是解构赋值，
 // :{params:{id:string}}是类型定义
 // 合起来是解构去除动态路由的id参数，类型为string
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
-  const chat = getChatById(params.id)
-  const messages = getMessagesByChatId(params.id)
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params
+  const chat = getChatById(id)
+  const messages = getMessagesByChatId(id)
   return Response.json({
     chat,
     messages
@@ -15,14 +16,16 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
 }
 
 // 删除对话
-export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
-  deleteChat(params.id)
+export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params
+  await deleteChat(id)
   return Response.json({ success: 'true' })
 }
 
 // 更新对话标题
-export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params
   const { title } = await req.json()
-  updateChatTitle(params.id, title)
+  await updateChatTitle(id, title)
   return Response.json({ success: 'true' })
 }
