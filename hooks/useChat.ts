@@ -28,8 +28,6 @@ interface UseChatReturn {
 
 export function useChat(options: UseChatOptions = {}): UseChatReturn {
     const { chatId, api = '/api/chat', model = 'Qwen2.5', initialMessages = [] } = options
-
-    // const [messages, setMessages] = useState<Message[]>(initialMessages)
     const [input, setInput] = useState('')
     const [isLoading, setIsLoading] = useState(false)
     const [abortController, setAbortController] = useState<AbortController | null>(null);
@@ -73,10 +71,15 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
         setAbortController(abortController)
 
         // 添加消息
-        // if (chatId) {
-        //     addMessage(chatId, userMessage)
-        //     addMessage(chatId, assistantMessage)
-        // }
+        try {
+            if (chatId) {
+                await fetch(`/api/chats/${chatId}/messages`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userMessage, assistantMessage })
+                })
+            }
+        } catch { }
 
         // 发送请求
         try {
@@ -142,6 +145,21 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
                     }
                 }
             }
+            // 更新ai消息到数据库
+            try {
+                if (chatId) {
+                    await fetch(`/api/chats/${chatId}/messages`, {
+                        method: "PATCH",
+                        headers: {
+                            "Content-Type": "application/json"
+                        },
+                        body: JSON.stringify({
+                            messageId: assistantMessage.id,
+                            content: accumulatedContent
+                        })
+                    })
+                }
+            } catch { }
         } catch (e) {
             if ((e as Error).name === 'AbortError') {
                 console.log('aborted')

@@ -6,20 +6,20 @@ export interface ChatModel {
     description: string
 }
 
-export const DEFAULT_CHAT_MODEL = 'Qwen2.5'
+export const DEFAULT_CHAT_MODEL = 'qwen 2.5:7b'
 
 export const chatModels: ChatModel[] = [
-    {
-        id: 'llama3.2',
-        name: 'llama3.2',
-        provider: 'ollama',
-        description: 'Meta 的开源模型，适合通用对话',
-    },
     {
         id: 'qwen2.5:7b',
         name: 'qwen 2.5:7b',
         provider: 'ollama',
         description: '阿里云开源模型，中文能力强',
+    },
+    {
+        id: 'llama3.2',
+        name: 'llama3.2',
+        provider: 'ollama',
+        description: 'Meta 的开源模型，适合通用对话',
     },
     {
         id: 'deepseek-r1',

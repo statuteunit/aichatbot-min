@@ -10,11 +10,13 @@ import { useState } from "react"
 import { Button } from "@/components/ui/button"
 
 export function Chat() {
+    const MOCK_USER_ID = "user1"
+    // 模拟当前登录用户
     // 选择模型状态
     const [selectedModelId, setSelectedModelId] = useState(DEFAULT_CHAT_MODEL)
-    const { messages, input, setInput, isLoading, append, reload, stop, setMessages } = useChat({ model: selectedModelId })
-    const [isOpen, setIsOpen] = useState(false)
     const [currentChatId, setCurrentChatId] = useState<string | null>(null)
+    const { messages, input, setInput, isLoading, append, reload, stop, setMessages } = useChat({ model: selectedModelId, chatId: currentChatId ?? undefined })
+    const [isOpen, setIsOpen] = useState(false)
 
     const handleSubmit = () => {
         append(input)
@@ -38,7 +40,7 @@ export function Chat() {
         const res = await fetch('/api/chats', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: selectedModelId })
+            body: JSON.stringify({ model: selectedModelId, userId: MOCK_USER_ID })
         })
         if (!res.ok) return
         const chat = await res.json()
@@ -50,15 +52,16 @@ export function Chat() {
         try {
             // 中断当前流
             stop()
-            const res = await fetch(`/api/chats/${chatId}`)
+            setInput('')
+            const res = await fetch(`/api/chats/${chatId}?userId=user1`)
             if (!res.ok) return
             // 获取该id下的历史记录
             const chat = await res.json()
             setMessages(chat.messages || [])
             setCurrentChatId(chatId)
-            if (chat?.model) {
-                setSelectedModelId(chat.model)
-                document.cookie = `selectedModel=${chat.model}; path=/; max-age=31536000`
+            if (chat.chat?.model) {
+                setSelectedModelId(chat.chat.model)
+                document.cookie = `selectedModel=${chat.chat.model}; path=/; max-age=31536000`
             }
             setIsOpen(false)
         } catch (e) {
@@ -87,6 +90,7 @@ export function Chat() {
                 onNewChat={onNewChat}
                 onSelectChat={onSelectChat}
                 currentChatId={currentChatId}
+                userId={MOCK_USER_ID}
             />
 
             {/* 模型选择器 */}

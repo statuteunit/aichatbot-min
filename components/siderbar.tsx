@@ -10,14 +10,15 @@ interface siderbarProps {
   onNewChat: () => void
   onSelectChat: (chatId: string) => void
   currentChatId: string | null
+  userId: string
 }
 
-export function Siderbar({ isOpen, onClose, onNewChat, onSelectChat, currentChatId }: siderbarProps) {
+export function Siderbar({ isOpen, onClose, onNewChat, onSelectChat, currentChatId, userId }: siderbarProps) {
   const [chats, setChats] = useState([])
   // 获取对话列表
   const loadChats = async () => {
     try {
-      const response = await fetch('/api/chats')
+      const response = await fetch(`/api/chats?userId=${userId}`)
       if (!response.ok) return
       const data = await response.json()
       setChats(data)
