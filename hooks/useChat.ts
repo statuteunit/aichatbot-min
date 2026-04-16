@@ -96,7 +96,9 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
             // 发送请求
             const res = await fetch(api, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json'
+                },
                 body: JSON.stringify({
                     model,
                     messages: apiMessages,

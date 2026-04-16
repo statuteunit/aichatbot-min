@@ -96,3 +96,18 @@ OPENAI_API_KEY=your-api-key
 - 自己实现 useChat hook 和流式处理 ✅
 - 使用 Ollama 本地部署模型 + OpenAI 兼容 API
 <!-- END:goal -->
+
+<!-- BEGIN:summary -->
+mini-chatbot
+技术栈：Typescript+Nextjs+Zustand+Shadcn UI+Tailwind CSS +Prisma+postgreSQL
+概述：全栈AI聊天应用，支持流式对话、联网搜索、图片生成、思考模式、语音交互、文件上传、会话管理、对话分享等功能
+SSE流式传输与状态管理：
+对 EventSource 无法携带 POST Body 与自义 Header 的限制，基于 Fetch + ReadableStream封装SSE解析层。
+设计有限状态机管理消息生命周期(thinkingtool_callinganswering)，SSE事件驱动状态转换，解决多轮Function Calling场景下UI与流式消息状态不同步的问题。
+渲染与性能优化
+引入buffer 缓冲队列配合requestAnimationFrame批量刷新，解决流式 chunk 高频触发setState导致的冗余re-render，渲染频次从峰值120次/秒降至40次/秒以下。
+针对流式输出时富文本块高度突变引发的布局偏移，组合预留骨架高度、overflow-anchor滚动锚定、未闭合Markdown块自动补全消除抖动。 
+基于TanStackVirtual实现虚拟滚动，配合游标分页实现长会话场景下的流畅渲染。利用RSC将分享页Markdown渲染移至服务端，Page chunk压缩至5.6KB，TBT控制在90ms 以内。
+认证与安全:设计弹窗 OAuth认证流程，通过 window.open+ postMessage实现跨窗口凭证传递，规避传统全页跳转造成的会话上下文丢失。用户凭证采用JWT+HttpOnly Cookie存储防止XSS窃取;针对AI输出可能包含恶意HTML的风险
+配置rehype-sanitize白名单过滤，防止XSS注入。
+<!-- END:summary -->

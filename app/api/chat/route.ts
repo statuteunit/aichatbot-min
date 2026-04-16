@@ -1,17 +1,26 @@
 import { NextRequest } from 'next/server'
 
 const OLLAMA_BASE_URL = process.env.NEXT_PUBLIC_OLLAMA_BASE_URL
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY
+const OPENROUTER_BASE_URL = process.env.NEXT_PUBLIC_OPENROUTER_BASE_URL
 
 export async function POST(req: NextRequest) {
     try {
+        if (!OPENROUTER_API_KEY) {
+            return new Response(
+                JSON.stringify({ error: 'OPENROUTER_API_KEY is not configured' }),
+                { status: 500 }
+            )
+        }
         // 接收请求体
         const body = await req.json()
-        const { model = 'llama3.2', messages, stream = true } = body
+        const { model = 'openai/gpt-3.5-turbo:free', messages, stream = true } = body
         // 调用API获取AI输出
-        const response = await fetch(`${OLLAMA_BASE_URL}/v1/chat/completions`, {
+        const response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${OPENROUTER_API_KEY}`
             },
             body: JSON.stringify({
                 model,

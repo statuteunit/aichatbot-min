@@ -6,32 +6,32 @@ export interface ChatModel {
     description: string
 }
 
-export const DEFAULT_CHAT_MODEL = 'qwen 2.5:7b'
+export const DEFAULT_CHAT_MODEL = 'deepseek-r1:free'
 
 export const chatModels: ChatModel[] = [
     {
-        id: 'qwen2.5:7b',
-        name: 'qwen 2.5:7b',
-        provider: 'ollama',
+        id: 'qwen/qwen2.5-72b-instruct:free',
+        name: 'qwen 2.5',
+        provider: 'openrouter',
         description: '阿里云开源模型，中文能力强',
     },
     {
-        id: 'llama3.2',
-        name: 'llama3.2',
-        provider: 'ollama',
-        description: 'Meta 的开源模型，适合通用对话',
+        id: 'anthropic/claude-3-haiku:free',
+        name: 'claude-3-haiku',
+        provider: 'openrouter',
+        description: 'Anthropic 的轻量模型，适合编写代码',
     },
     {
-        id: 'deepseek-r1',
+        id: 'deepseek/deepseek-r1:free',
         name: 'DeepSeek R1',
-        provider: 'ollama',
+        provider: 'openrouter',
         description: '推理能力强，适合复杂任务',
     },
     {
-        id: 'llava:7b',
-        name: 'llava:7b',
-        provider: 'ollama',
-        description: '欧洲开源模型，性能优秀',
+        id: 'openai/gpt-3.5-turbo:free ',
+        name: 'chatgpt3.5',
+        provider: 'openrouter',
+        description: 'OpenAI gpt模型,性能优秀',
     },
 ]
 
