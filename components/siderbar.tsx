@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { useSession } from "next-auth/react"
 
 interface siderbarProps {
   isOpen: boolean
@@ -15,6 +16,7 @@ interface siderbarProps {
 
 export function Siderbar({ isOpen, onClose, onNewChat, onSelectChat, currentChatId, userId }: siderbarProps) {
   const [chats, setChats] = useState([])
+  const {data:session}=useSession()
   // 获取对话列表
   const loadChats = async () => {
     try {
@@ -75,7 +77,7 @@ export function Siderbar({ isOpen, onClose, onNewChat, onSelectChat, currentChat
         </div>
 
         {/* 对话列表 */}
-        <div className="overflow-y-auto h-[calc(100%-120px)]">
+        {session?<div className="overflow-y-auto h-[calc(100%-120px)]">
           {chats.length === 0 ? (
             <div className="p-4 text-center text-gray-400">
               暂无对话
@@ -97,7 +99,7 @@ export function Siderbar({ isOpen, onClose, onNewChat, onSelectChat, currentChat
               </button>
             ))
           )}
-        </div>
+        </div>:<div>登陆后查看历史记录</div>}
       </div>
     </>
   )

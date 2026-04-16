@@ -1,8 +1,15 @@
 import { NextRequest } from 'next/server'
+import { auth } from "@/auth"
 
 const OLLAMA_BASE_URL = process.env.NEXT_PUBLIC_OLLAMA_BASE_URL
 
 export async function POST(req: NextRequest) {
+    const session =await auth()
+    if(!session?.user?.id){
+        return new Response("Unauthorized",{
+            status:401
+        })
+    }
     try {
         // 接收请求体
         const body = await req.json()
