@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server'
 import { auth } from "@/auth"
 
 const OLLAMA_BASE_URL = process.env.NEXT_PUBLIC_OLLAMA_BASE_URL
+const openRouterBaseUrl=process.env.OPENROUTER_BASE_URL
 
 export async function POST(req: NextRequest) {
     const session =await auth()
@@ -15,10 +16,11 @@ export async function POST(req: NextRequest) {
         const body = await req.json()
         const { model = 'llama3.2', messages, stream = true } = body
         // 调用API获取AI输出
-        const response = await fetch(`${OLLAMA_BASE_URL}/v1/chat/completions`, {
+        const response = await fetch(`${openRouterBaseUrl}/v1/chat/completions`, {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`
             },
             body: JSON.stringify({
                 model,
