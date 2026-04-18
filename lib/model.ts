@@ -6,32 +6,32 @@ export interface ChatModel {
     description: string
 }
 
-export const DEFAULT_CHAT_MODEL = 'deepseek-r1:free'
+export const DEFAULT_CHAT_MODEL = 'openrouter/free'
 
 export const chatModels: ChatModel[] = [
     {
-        id: 'qwen/qwen2.5-72b-instruct:free',
-        name: 'qwen 2.5',
+        id: 'openrouter/free',
+        name: 'openrouter/free',
         provider: 'openrouter',
-        description: '阿里云开源模型，中文能力强',
+        description: '自动匹配最优可用免费模型，适合复杂任务',
     },
     {
-        id: 'anthropic/claude-3-haiku:free',
-        name: 'claude-3-haiku',
+        id: 'moonshotai/kimi-k2.5:free',
+        name: 'kimi-k2.5',
         provider: 'openrouter',
-        description: 'Anthropic 的轻量模型，适合编写代码',
+        description: '长文档阅读与代码生成能力极强',
     },
     {
-        id: 'deepseek/deepseek-r1:free',
-        name: 'DeepSeek R1',
+        id: 'minimax/minimax-m2.5:free',
+        name: 'Minimax M2.5',
         provider: 'openrouter',
-        description: '推理能力强，适合复杂任务',
+        description: 'MoE稀疏架构,编程与工具调用顶尖',
     },
     {
-        id: 'openai/gpt-3.5-turbo:free ',
-        name: 'chatgpt3.5',
+        id: 'openai/gpt-oss-120b:free',
+        name: 'gpt-oss-120b',
         provider: 'openrouter',
-        description: 'OpenAI gpt模型,性能优秀',
+        description: 'OpenAI开源MoE大模型,表现优异',
     },
 ]
 

@@ -3,7 +3,7 @@ import { auth } from "@/auth"
 
 const OLLAMA_BASE_URL = process.env.NEXT_PUBLIC_OLLAMA_BASE_URL
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY
-const OPENROUTER_BASE_URL = process.env.NEXT_PUBLIC_OPENROUTER_BASE_URL
+const OPENROUTER_BASE_URL = process.env.OPENROUTER_BASE_URL
 
 export async function POST(req: NextRequest) {
     const session = await auth()
@@ -35,6 +35,8 @@ export async function POST(req: NextRequest) {
                 stream
             })
         })
+        console.log(response);
+
 
         if (!response.ok) {
             return new Response(
