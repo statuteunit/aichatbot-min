@@ -31,7 +31,7 @@
 
 - Next.js 15 (App Router)
 - 简单的内存/文件存储替代数据库
-- 无认证机制 2. 模型选择系统
+- next-auth实现OAuth认证 2. 模型选择系统
 - 定义模型配置文件（id、name、provider、capabilities）
 - 前端模型选择器 UI
 - Cookie 存储当前选中模型
@@ -45,7 +45,7 @@
 - 简化版本可先跳过
 四、简化策略总结
 
-原项目 简化后 Vercel AI Gateway (多模型) 直接使用 @ai-sdk/openai PostgreSQL + Drizzle ORM 内存 Map 存储 NextAuth 认证 无认证，所有请求放行 Redis 断点续传 跳过，不实现 多 API 路由 只保留 /api/chat Artifacts 版本管理 简化或跳过
+PostgreSQL NextAuth 认证
 
 五、实现顺序建议
 
@@ -76,7 +76,7 @@
 
 第四步：消息持久化
 
-- 用内存 Map 存储对话历史
+- 使用postgres数据库
 
 - 刷新页面可加载历史
 
@@ -94,7 +94,7 @@
 OPENAI_API_KEY=your-api-key
 
 - 自己实现 useChat hook 和流式处理 ✅
-- 使用 Ollama 本地部署模型 + OpenAI 兼容 API
+- 使用 openrouter API_KEY + OpenAI 兼容 API
 <!-- END:goal -->
 
 <!-- BEGIN:summary -->

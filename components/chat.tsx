@@ -8,9 +8,12 @@ import { Siderbar } from "./siderbar"
 import { DEFAULT_CHAT_MODEL } from "@/lib/model"
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
+import { useSession } from "next-auth/react"
 
 export function Chat() {
     const MOCK_USER_ID = "user1"
+    const { data: session } = useSession()
+    const userId = session?.user?.id ?? MOCK_USER_ID
     // 模拟当前登录用户
     // 选择模型状态
     const [selectedModelId, setSelectedModelId] = useState(DEFAULT_CHAT_MODEL)
@@ -40,7 +43,7 @@ export function Chat() {
         const res = await fetch('/api/chats', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: selectedModelId, userId: MOCK_USER_ID })
+            body: JSON.stringify({ model: selectedModelId, userId: userId })
         })
         if (!res.ok) return
         const chat = await res.json()
@@ -53,7 +56,7 @@ export function Chat() {
             // 中断当前流
             stop()
             setInput('')
-            const res = await fetch(`/api/chats/${chatId}?userId=user1`)
+            const res = await fetch(`/api/chats/${chatId}?userId=${userId}`)
             if (!res.ok) return
             // 获取该id下的历史记录
             const chat = await res.json()
@@ -83,6 +86,7 @@ export function Chat() {
                     +
                 </Button>
             </div>
+
             {/* 侧边栏 */}
             <Siderbar
                 isOpen={isOpen}
@@ -90,7 +94,7 @@ export function Chat() {
                 onNewChat={onNewChat}
                 onSelectChat={onSelectChat}
                 currentChatId={currentChatId}
-                userId={MOCK_USER_ID}
+                userId={userId ?? MOCK_USER_ID}
             />
 
             {/* 模型选择器 */}
