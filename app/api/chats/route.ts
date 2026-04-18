@@ -4,10 +4,10 @@ import { auth } from "@/auth"
 
 // 获取所有对话的历史记录
 export async function GET(req: NextRequest) {
-  const session =await auth()
-  if(!session?.user?.id){
-    return new Response("Unauthorized",{
-        status:401
+  const session = await auth()
+  if (!session?.user?.id) {
+    return new Response("Unauthorized", {
+      status: 401
     })
   }
   const { searchParams } = new URL(req.url)
@@ -18,10 +18,10 @@ export async function GET(req: NextRequest) {
 
 // 创建新对话接口
 export async function POST(req: NextRequest) {
-  const session =await auth()
-  if(!session?.user?.id){
-    return new Response("Unauthorized",{
-        status:401
+  const session = await auth()
+  if (!session?.user?.id) {
+    return new Response("Unauthorized", {
+      status: 401
     })
   }
   try {
@@ -34,3 +34,4 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: error.message }, { status: 500 })
   }
 }
+
