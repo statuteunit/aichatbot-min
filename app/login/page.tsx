@@ -11,11 +11,11 @@ export default function LoginPage() {
             await signIn("github")
           }}
         >
-          <button type="submit" className="w-full rounded-md bg-gray-900 text-white py-2 px-4">
+          <button type="submit" className="w-full rounded-md bg-gray-900 text-white py-2 px-4 hover:cursor-pointer">
             使用 GitHub 登录
           </button>
         </form>
-        <form
+        {/* <form
           action={async () => {
             "use server"
             await signIn("google")
@@ -24,7 +24,7 @@ export default function LoginPage() {
           <button type="submit" className="w-full rounded-md border border-gray-300 py-2 px-4">
             使用 Google 登录
           </button>
-        </form>
+        </form> */}
       </div>
     </div>
   )

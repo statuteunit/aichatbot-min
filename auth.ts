@@ -55,5 +55,17 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
                 maxAge: 7 * 24 * 60 * 60
             }
         }
-    }
+    },
+    debug: process.env.NODE_ENV !== "production" || process.env.AUTH_DEBUG === "true",
+    logger: {
+        error(error) {
+            console.error("[auth][error]", error)
+        },
+        warn(code) {
+            console.warn("[auth][warn]", code)
+        },
+        debug(code, metadata) {
+            console.log("[auth][debug]", code, metadata)
+        },
+    },
 })
