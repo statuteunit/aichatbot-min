@@ -2,7 +2,7 @@
 
 import { useChat } from "@/hooks/useChat"
 import { MessageList } from "@/components/messageList"
-import { ChatInput } from "@/components/ui/chatInput"
+import { ChatInput } from "@/components/chatInput"
 import { ModelSelector } from "./modelSelector"
 import { Siderbar } from "./siderbar"
 import { DEFAULT_CHAT_MODEL } from "@/lib/model"
@@ -180,51 +180,54 @@ export function Chat() {
     }, [currentChatId, isLoadingOlder, messages, setMessages, setChatSnapshot])
 
     return (
-        <div className="flex flex-col h-screen max-w-4xl mx-auto">
-            {/* 标题栏 */}
-            <header className="p-4 border-b">
-                <h1 className="text-xl font-bold">AI Chat</h1>
-                <p className="text-sm text-gray-500">Powered by Ollama</p>
-            </header>
-
-            {/* 控制侧边栏 */}
-            <div className="flex justify-end p-4">
-                <Button onClick={onToggleOpen} className="w-full" variant="outline">
-                    +
-                </Button>
+        <>
+            <div className="flex justify-start gap-[250px] items-center pl-5 mb-5 fixed left-0 right-0 top-0 z-999">
+                {/* 控制侧边栏 */}
+                <div className="">
+                    <Button onClick={onToggleOpen} className="w-fit" variant="outline">
+                        +
+                    </Button>
+                </div>
+                {/* 标题栏 */}
+                <header className="p-4 border-b flex-1 max-w-4xl">
+                    <h1 className="text-xl font-bold">let's chat</h1>
+                    <p className="text-sm text-gray-500">Powered by Openrouter</p>
+                </header>
             </div>
+            <div className="flex flex-col h-screen max-w-4xl mx-auto">
+                {/* 侧边栏 */}
+                <Siderbar
+                    isOpen={isOpen}
+                    onClose={onToggleOpen}
+                    onNewChat={onNewChat}
+                    onSelectChat={onSelectChat}
+                    currentChatId={currentChatId}
+                    userId={userId ?? MOCK_USER_ID}
+                />
 
-            {/* 侧边栏 */}
-            <Siderbar
-                isOpen={isOpen}
-                onClose={onToggleOpen}
-                onNewChat={onNewChat}
-                onSelectChat={onSelectChat}
-                currentChatId={currentChatId}
-                userId={userId ?? MOCK_USER_ID}
-            />
+                {/* 模型选择器 */}
+                <ModelSelector
+                    selectedModelId={selectedModelId}
+                    onModelChange={handleModelChange}
+                />
 
-            {/* 模型选择器 */}
-            <ModelSelector
-                selectedModelId={selectedModelId}
-                onModelChange={handleModelChange}
-            />
+                {/* 消息列表 */}
+                <MessageList
+                    messages={messages}
+                    isLoading={isLoading}
+                    hasMore={currentSnapshot?.hasMore}
+                    isLoadingOlder={isLoadingOlder}
+                    onLoadOlder={loadOlderMessages} />
 
-            {/* 消息列表 */}
-            <MessageList
-                messages={messages}
-                isLoading={isLoading}
-                hasMore={currentSnapshot?.hasMore}
-                isLoadingOlder={isLoadingOlder}
-                onLoadOlder={loadOlderMessages} />
-
-            {/* 输入框 */}
-            <ChatInput
-                input={input}
-                isLoading={isLoading}
-                onInputChange={setInput}
-                onSubmit={handleSubmit}
-            />
-        </div>
+                {/* 输入框 */}
+                <ChatInput
+                    input={input}
+                    isLoading={isLoading}
+                    onInputChange={setInput}
+                    onSubmit={handleSubmit}
+                    onStop={stop}
+                />
+            </div>
+        </>
     )
 }

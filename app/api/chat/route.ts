@@ -93,8 +93,12 @@ export async function POST(req: NextRequest) {
         let response: Response | null = null
         let lastErr: unknown = null
         let lastErrText = ''
+        let aborted = false
         // 调用API获取AI输出
         for (let i = 0; i < MAX_RETRIES; i++) {
+            if (aborted) {
+                return new Response(null, { status: 204 })
+            }
             try {
                 response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
                     method: 'POST',
@@ -106,8 +110,13 @@ export async function POST(req: NextRequest) {
                         model,
                         messages,
                         stream
-                    })
+                    }),
+                    signal: req.signal
                 })
+                // 用户主动中断，直接退出重试
+                if (req.signal.aborted) {
+                    throw new DOMException('Aborted', 'AbortError')
+                }
                 if (response.ok) {
                     // 提前结束
                     break
@@ -120,6 +129,10 @@ export async function POST(req: NextRequest) {
                     }
                 )
             } catch (err) {
+                if ((err as Error).name === 'AbortError') {
+                    aborted = true
+                    return new Response(null, { status: 204 })
+                }
                 lastErr = err
                 console.error(`OpenRouter request exception, attempt ${i}/${MAX_RETRIES}`, err)
             }
@@ -129,6 +142,10 @@ export async function POST(req: NextRequest) {
             }
         }
         if (!response?.ok) {
+            if (aborted) {
+                // 不需要fallback
+                return
+            }
             console.error('OpenRouter failed after max retries', {
                 lastErr,
                 lastErrText

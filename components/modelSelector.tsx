@@ -16,7 +16,7 @@ export function ModelSelector({ selectedModelId, onModelChange }: ModelSelectorP
     const selectedModel = getModelById(selectedModelId)
 
     return (
-        <div className="relative">
+        <div className="relative mt-25">
             {/* 触发按钮 */}
             <Button
                 variant="outline"

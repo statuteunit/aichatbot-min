@@ -4,21 +4,24 @@
 import { FormEvent, KeyboardEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import { loadBindings } from 'next/dist/build/swc';
 
 interface ChatInputProps {
   input: string;
   isLoading: boolean;
   onInputChange: (value: string) => void;
   onSubmit: () => void;
+  onStop: () => void
 }
 
-export function ChatInput({ 
-  input, 
-  isLoading, 
-  onInputChange, 
-  onSubmit 
+export function ChatInput({
+  input,
+  isLoading,
+  onInputChange,
+  onSubmit,
+  onStop
 }: ChatInputProps) {
-  
+
   // 表单提交
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -49,12 +52,13 @@ export function ChatInput({
           className="flex-1"
           rows={1}
         />
-        <Button 
-          type="submit" 
-          disabled={!input.trim() || isLoading}
+        <Button
+          type="button"
+          disabled={isLoading ? false : !input.trim()}
           className="self-end"
+          onClick={isLoading ? onStop : onSubmit}
         >
-          {isLoading ? '发送中...' : '发送'}
+          {isLoading ? '停止' : '发送'}
         </Button>
       </div>
     </form>

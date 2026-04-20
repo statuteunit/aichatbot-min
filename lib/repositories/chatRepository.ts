@@ -141,7 +141,7 @@ export async function updateAssistantMessage(
   chatId: string,
   messageId: string,
   content: string,
-  userId?: string
+  userId?: string,
 ) {
   await prisma.$transaction(async (tx) => {
     const chat = await tx.chat.findFirst({

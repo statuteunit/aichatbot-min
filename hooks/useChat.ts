@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback } from "react"
+import { useState, useCallback, useRef } from "react"
 import { Message, ChatCompletionMessage } from "@/types/chat"
 import { generateId } from "@/lib/utils"
 // import { getMessagesByChatId, addMessage } from "@/lib/store"
@@ -31,7 +31,7 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
     const { chatId, api = '/api/chat', model = 'openrouter/free', initialMessages = [], onChatTitleChange } = options
     const [input, setInput] = useState('')
     const [isLoading, setIsLoading] = useState(false)
-    const [abortController, setAbortController] = useState<AbortController | null>(null);
+    const abortControllerRef = useRef<AbortController | null>(null)
 
     // 异步初始化消息记录当前对话的
     // 如果有 chatId，从存储加载消息
@@ -69,7 +69,7 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
 
         // 创建取消请求
         const abortController = new AbortController()
-        setAbortController(abortController)
+        abortControllerRef.current = abortController
 
         // 添加消息
         try {
@@ -90,6 +90,9 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
             }
         } catch { }
 
+        let accumulatedContent = ''
+        // 已经生成的内容应该正常保留
+        let aborted = false
         // 发送请求
         try {
             // 准备发送的消息
@@ -124,7 +127,6 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
             const decoder = new TextDecoder()
             if (!reader) return
             // 解析数据
-            let accumulatedContent = ''
             let buffer = ''
             // 累积更新消息内容
             while (true) {
@@ -174,14 +176,32 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
         } catch (e) {
             if ((e as Error).name === 'AbortError') {
                 console.log('aborted')
+                aborted = true
             } else {
                 console.log('chat Err:', e);
                 // 清空准备的占位消息
                 setMessages(messages.filter((m) => m.id !== assistantMessage.id))
             }
         } finally {
+            if (aborted) {
+                // 也要更新消息
+                try {
+                    if (chatId) {
+                        await fetch(`/api/chats/${chatId}/messages`, {
+                            method: "PATCH",
+                            headers: {
+                                "Content-Type": "application/json"
+                            },
+                            body: JSON.stringify({
+                                messageId: assistantMessage.id,
+                                content: accumulatedContent
+                            })
+                        })
+                    }
+                } catch { }
+            }
             setIsLoading(false)
-            setAbortController(null)
+            abortControllerRef.current = null
         }
     }, [messages, model, api, chatId])
 
@@ -199,8 +219,8 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
 
     // 停止生成
     const stop = useCallback(() => {
-        if (abortController) abortController.abort()
-    }, [abortController])
+        if (abortControllerRef.current) abortControllerRef.current.abort()
+    }, [abortControllerRef])
 
     return {
         messages,
