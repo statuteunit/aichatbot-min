@@ -10,7 +10,7 @@ datasource db {
 
 model User {
   id            String    @id @default(uuid())
-  email         String    @unique
+  email         String?   @unique
   name          String?
   emailVerified DateTime?
   image         String?
