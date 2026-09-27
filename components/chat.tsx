@@ -21,9 +21,8 @@ function normalizeMessages(messages: any[] | undefined | null) {
 }
 
 export function Chat() {
-    const MOCK_USER_ID = "user1"
     const { data: session } = useSession()
-    const userId = session?.user?.id ?? MOCK_USER_ID
+    const userId = session?.user?.id
     // 模拟当前登录用户
     // 选择模型状态
     const [selectedModelId, setSelectedModelId] = useState(DEFAULT_CHAT_MODEL)
@@ -97,7 +96,7 @@ export function Chat() {
         const res = await fetch('/api/chats', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: selectedModelId, userId: userId })
+            body: JSON.stringify({ model: selectedModelId })
         })
         if (!res.ok) return
         const chat = await res.json()
@@ -140,7 +139,8 @@ export function Chat() {
             // }
             setIsOpen(false)
         } catch (e) {
-
+            // 预留日志上报
+            console.error('Failed to select chat:', e);
         }
     }
     // 用户发新消息后，最近10条缓存要跟着更新
@@ -202,7 +202,6 @@ export function Chat() {
                     onNewChat={onNewChat}
                     onSelectChat={onSelectChat}
                     currentChatId={currentChatId}
-                    userId={userId ?? MOCK_USER_ID}
                 />
 
                 {/* 模型选择器 */}

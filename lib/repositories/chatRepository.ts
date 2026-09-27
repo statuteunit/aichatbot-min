@@ -37,35 +37,22 @@ function sortMessagesForDisplay<T extends { createdAt: Date; role: string }>(mes
   })
 }
 
-export async function createChat(model: string, userId?: string) {
-  // 如果提供了 userId，则确保该用户在 User 表中存在，以避免外键约束错误
-  if (userId) {
-    await prisma.user.upsert({
-      where: { id: userId },
-      update: {},
-      create: {
-        id: userId,
-        email: `${userId}@example.com`,
-        name: userId,
-      },
-    })
-  }
-
+export async function createChat(model: string, userId: string) {
   return prisma.chat.create({
-    data: { title: DEFAULT_CHAT_TITLE, model, userId: userId || null },
+    data: { title: DEFAULT_CHAT_TITLE, model, userId },
   })
 }
 
-export async function getAllChats(userId?: string) {
+export async function getAllChats(userId: string) {
   return prisma.chat.findMany({
-    where: { userId: userId || null },
+    where: { userId: userId },
     orderBy: { updatedAt: 'desc' },
   })
 }
 
-export async function getChatWithMessages(id: string, userId?: string) {
+export async function getChatWithMessages(id: string, userId: string) {
   const chat = await prisma.chat.findFirst({
-    where: { id, userId: userId || null },
+    where: { id, userId: userId },
   })
 
   if (!chat) {
@@ -84,11 +71,11 @@ export async function addMessages(
   chatId: string,
   userMessage: { id: string; role: 'user' | 'assistant' | 'system'; content: string; createdAt: Date },
   assistantMessage: { id: string; role: 'user' | 'assistant' | 'system'; content: string; createdAt: Date },
-  userId?: string
+  userId: string
 ) {
   return await prisma.$transaction(async (tx) => {
     const chat = await tx.chat.findFirst({
-      where: { id: chatId, userId: userId || null },
+      where: { id: chatId, userId: userId },
       select: { id: true, title: true },
     })
 
@@ -141,11 +128,11 @@ export async function updateAssistantMessage(
   chatId: string,
   messageId: string,
   content: string,
-  userId?: string,
+  userId: string,
 ) {
   await prisma.$transaction(async (tx) => {
     const chat = await tx.chat.findFirst({
-      where: { id: chatId, userId: userId || null },
+      where: { id: chatId, userId: userId },
       select: { id: true },
     })
 
@@ -165,11 +152,11 @@ export async function updateAssistantMessage(
   })
 }
 
-export async function updateChatTitle(id: string, title: string, userId?: string) {
+export async function updateChatTitle(id: string, title: string, userId: string) {
   return await prisma.chat.updateMany({
     where: {
       id,
-      userId: userId || null,
+      userId: userId,
     },
     data: {
       title: title?.trim() || DEFAULT_CHAT_TITLE,
@@ -178,10 +165,10 @@ export async function updateChatTitle(id: string, title: string, userId?: string
   })
 }
 
-export async function deleteChat(id: string, userId?: string) {
+export async function deleteChat(id: string, userId: string) {
   const where = {
     id,
-    userId: userId || null,
+    userId: userId,
   }
 
   const chat = await prisma.chat.findFirst({ where })
@@ -189,7 +176,7 @@ export async function deleteChat(id: string, userId?: string) {
 
   const res = await prisma.$transaction([
     prisma.message.deleteMany({ where: { chatId: id } }),
-    prisma.chat.deleteMany({ where: { id, userId: userId || null } }),
+    prisma.chat.deleteMany({ where: { id, userId } }),
   ])
 
   return res[1].count
@@ -198,7 +185,7 @@ export async function deleteChat(id: string, userId?: string) {
 // 分页请求messages
 export async function getChatMessagesPage(
   chatId: string,
-  userId: string | undefined,
+  userId: string,
   options: {
     limit?: number
     beforeId?: string
@@ -209,7 +196,7 @@ export async function getChatMessagesPage(
   const chat = await prisma.chat.findFirst({
     where: {
       id: chatId,
-      userId: userId || null,
+      userId: userId,
     },
     select: { id: true },
   })

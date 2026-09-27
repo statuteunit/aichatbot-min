@@ -12,10 +12,9 @@ interface siderbarProps {
   onNewChat: () => void
   onSelectChat: (chatId: string) => void
   currentChatId: string | null
-  userId: string
 }
 
-export function Siderbar({ isOpen, onClose, onNewChat, onSelectChat, currentChatId, userId }: siderbarProps) {
+export function Siderbar({ isOpen, onClose, onNewChat, onSelectChat, currentChatId }: siderbarProps) {
   // const [chats, setChats] = useState([])
   const { data: session } = useSession()
   // 不再需要自己加载对话列表，有chat组件统一加载

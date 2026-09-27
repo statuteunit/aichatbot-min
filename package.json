@@ -6,12 +6,18 @@
     "dev": "next dev",
     "build": "prisma generate && next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "db": "node scripts/db.mjs",
+    "db:sync": "node scripts/db.mjs sync",
+    "db:migrate": "node scripts/db.mjs migrate",
+    "db:deploy": "node scripts/db.mjs deploy"
   },
   "dependencies": {
+    "@ai-sdk/openai": "^3.0.114",
     "@auth/prisma-adapter": "^2.11.2",
     "@radix-ui/react-slot": "^1.2.4",
     "@vercel/postgres": "^0.10.0",
+    "ai": "^6.0.286",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "next": "16.2.1",
@@ -19,6 +25,7 @@
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "tailwind-merge": "^3.5.0",
+    "zod": "^4.6.5",
     "zustand": "^5.0.12"
   },
   "devDependencies": {

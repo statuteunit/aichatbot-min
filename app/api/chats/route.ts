@@ -1,37 +1,31 @@
 import { getAllChats, createChat } from '@/lib/repositories/chatRepository'
-import { NextRequest } from 'next/server'
-import { auth } from "@/auth"
+import { requireUserId } from '@/lib/api/auth'
+import { CreateChatSchema } from '@/lib/api/schemas'
+import { DEFAULT_CHAT_MODEL } from '@/lib/model'
+import { withApiLogging, logEvent } from '@/lib/api/observability'
 
 // 获取所有对话的历史记录
-export async function GET(req: NextRequest) {
-  const session = await auth()
-  if (!session?.user?.id) {
-    return new Response("Unauthorized", {
-      status: 401
-    })
-  }
-  const { searchParams } = new URL(req.url)
-  // const userId = searchParams.get('userId') || undefined
-  const chats = await getAllChats(session.user.id)
+export const GET = withApiLogging(async (req, requestId) => {
+  const userId = await requireUserId()
+  logEvent('info', 'chats.list', { requestId, userId })   // 注意：只记 id，不记内容
+  const chats = await getAllChats(userId)
   return Response.json(chats)
-}
+}, 'chats.GET')
 
 // 创建新对话接口
-export async function POST(req: NextRequest) {
-  const session = await auth()
-  if (!session?.user?.id) {
-    return new Response("Unauthorized", {
-      status: 401
-    })
+export const POST = withApiLogging(async (req, requestId) => {
+  const userId = await requireUserId()
+
+  const parsed = CreateChatSchema.safeParse(await req.json().catch(() => null))
+  if (!parsed.success) {
+    return Response.json(
+      { error: 'INVALID_BODY', requestId },
+      { status: 400 },
+    )
   }
-  try {
-    const body = await req.json()
-    const { model, userId } = body
-    const chat = await createChat(model ?? 'qwen 2.5:7b', userId)
-    return Response.json(chat)
-  } catch (error: any) {
-    console.error('POST /api/chats error:', error)
-    return Response.json({ error: error.message }, { status: 500 })
-  }
-}
+
+  const chat = await createChat(parsed.data.model ?? DEFAULT_CHAT_MODEL, userId)
+  logEvent('info', 'chats.create', { requestId, userId, chatId: chat.id, model: chat.model })
+  return Response.json(chat)
+}, 'chats.POST')
 
