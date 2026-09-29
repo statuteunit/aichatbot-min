@@ -10,7 +10,8 @@
     "db": "node scripts/db.mjs",
     "db:sync": "node scripts/db.mjs sync",
     "db:migrate": "node scripts/db.mjs migrate",
-    "db:deploy": "node scripts/db.mjs deploy"
+    "db:deploy": "node scripts/db.mjs deploy",
+    "schema:analysis": "tsx scripts/print-analysis-schema.mjs"
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.114",
@@ -39,6 +40,7 @@
     "eslint-config-next": "16.2.1",
     "prisma": "5",
     "tailwindcss": "^4",
+    "tsx": "^4.23.15",
     "typescript": "^5"
   }
 }

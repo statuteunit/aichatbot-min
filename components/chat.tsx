@@ -7,16 +7,19 @@ import { ModelSelector } from "./modelSelector"
 import { Siderbar } from "./siderbar"
 import { DEFAULT_CHAT_MODEL } from "@/lib/model"
 import { useChatCacheStore } from '@/stores/chat-cache-store'
-import { useCallback, useMemo, useState, useEffect } from 'react'
+import { useCallback, useState, useEffect } from 'react'
 import { Button } from "@/components/ui/button"
 import { useSession } from "next-auth/react"
+import { Message } from "@/types/chat"
+import { MessageStatus } from "@/types/stream"
 
-// 修正messages的createdAt类型
-function normalizeMessages(messages: any[] | undefined | null) {
+function normalizeMessages(messages: any[] | undefined | null): Message[] {
     const safeMessages = Array.isArray(messages) ? messages : []
     return safeMessages.map((item) => ({
         ...item,
-        createdAt: new Date(item.createdAt)
+        createdAt: new Date(item.createdAt),
+        // 历史消息一律已完成，否则 UI 会一直显示流式动画
+        status: (item.status ?? 'done') as MessageStatus,
     }))
 }
 
@@ -44,7 +47,7 @@ export function Chat() {
 
     const currentSnapshot = currentChatId ? messageCache[currentChatId] : undefined
 
-    const { messages, input, setInput, isLoading, append, reload, stop, setMessages } = useChat({
+    const { messages, input, setInput, isBusy, append, reload, stop, setMessages } = useChat({
         model: selectedModelId,
         chatId: currentChatId ?? undefined,
         onChatTitleChange: (chatId, title) => {
@@ -146,6 +149,8 @@ export function Chat() {
     // 用户发新消息后，最近10条缓存要跟着更新
     useEffect(() => {
         if (!currentChatId) return
+        // 流式过程中不快照，避免每帧写 Zustand；流结束后再落一次
+        if (isBusy) return
 
         const hasMore = currentSnapshot?.hasMore ?? false
         const nextCursor = currentSnapshot?.nextCursor ?? null
@@ -213,15 +218,16 @@ export function Chat() {
                 {/* 消息列表 */}
                 <MessageList
                     messages={messages}
-                    isLoading={isLoading}
                     hasMore={currentSnapshot?.hasMore}
                     isLoadingOlder={isLoadingOlder}
-                    onLoadOlder={loadOlderMessages} />
+                    onLoadOlder={loadOlderMessages}
+                    onReload={() => { void reload() }}
+                />
 
                 {/* 输入框 */}
                 <ChatInput
                     input={input}
-                    isLoading={isLoading}
+                    isLoading={isBusy}
                     onInputChange={setInput}
                     onSubmit={handleSubmit}
                     onStop={stop}

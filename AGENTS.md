@@ -49,7 +49,7 @@
 - 创建会话时保存当前模型，切换历史会话时恢复对应模型
 
 3. 流式对话核心
-- 前端使用自研 `hooks/useChat.ts`
+- 前端使用自研 `hooks/useChat.ts`，改造为使用ai SDK的useChat，适配agent
 - 基于 `fetch` + `ReadableStream.getReader()` 手动解析 SSE
 - 兼容 OpenAI Chat Completions 风格的 `data:` 流式响应
 - 支持发送、停止生成、重新生成、占位 assistant 消息更新

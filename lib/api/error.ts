@@ -1,11 +1,6 @@
 // lib/api/errors.ts
-import { UnauthorizedError } from './auth'
-
-export class ApiError extends Error {
-  constructor(readonly status: number, readonly code: string, message?: string) {
-    super(message ?? code)
-  }
-}
+import 'server-only'
+import { ApiError, UnauthorizedError } from '@/lib/errors'
 
 /** 把异常统一映射为响应体；未预期异常不泄漏内部信息 */
 export function toErrorResponse(err: unknown, requestId: string) {

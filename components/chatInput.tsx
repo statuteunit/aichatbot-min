@@ -4,7 +4,6 @@
 import { FormEvent, KeyboardEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { loadBindings } from 'next/dist/build/swc';
 
 interface ChatInputProps {
   input: string;
