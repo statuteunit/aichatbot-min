@@ -9,24 +9,29 @@ import { DEFAULT_CHAT_MODEL } from "@/lib/model"
 import { useChatCacheStore } from '@/stores/chat-cache-store'
 import { useCallback, useState, useEffect } from 'react'
 import { Button } from "@/components/ui/button"
-import { useSession } from "next-auth/react"
 import { Message } from "@/types/chat"
 import { MessageStatus } from "@/types/stream"
 
-function normalizeMessages(messages: any[] | undefined | null): Message[] {
+/** 数据库返回的原始消息：createdAt 是字符串，status 可能缺失 */
+interface RawMessage {
+    id: string
+    role: Message['role']
+    content: string
+    createdAt: string | Date
+    status?: MessageStatus
+}
+
+function normalizeMessages(messages: RawMessage[] | undefined | null): Message[] {
     const safeMessages = Array.isArray(messages) ? messages : []
     return safeMessages.map((item) => ({
         ...item,
         createdAt: new Date(item.createdAt),
         // 历史消息一律已完成，否则 UI 会一直显示流式动画
-        status: (item.status ?? 'done') as MessageStatus,
+        status: item.status ?? 'done',
     }))
 }
 
 export function Chat() {
-    const { data: session } = useSession()
-    const userId = session?.user?.id
-    // 模拟当前登录用户
     // 选择模型状态
     const [selectedModelId, setSelectedModelId] = useState(DEFAULT_CHAT_MODEL)
     const [currentChatId, setCurrentChatId] = useState<string | null>(null)
@@ -38,8 +43,6 @@ export function Chat() {
         messageCache,
         setChats,
         upsertChat,
-        removeChat,
-        invalidateChats,
         setChatSnapshot,
         clearChatSnapshot
     } = useChatCacheStore()
@@ -156,7 +159,7 @@ export function Chat() {
         const nextCursor = currentSnapshot?.nextCursor ?? null
 
         setChatSnapshot(currentChatId, messages, hasMore, nextCursor)
-    }, [currentChatId, messages, currentSnapshot?.hasMore, currentSnapshot?.nextCursor, setChatSnapshot])
+    }, [currentChatId, messages, isBusy, currentSnapshot?.hasMore, currentSnapshot?.nextCursor, setChatSnapshot])
 
     // 向上滚动加载
     const loadOlderMessages = useCallback(async () => {

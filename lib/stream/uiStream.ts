@@ -100,9 +100,16 @@ export function reduceStreamEvent(state: StreamState, event: StreamEvent): Strea
       return state
 
     default: {
-      // 穷尽性检查：以后新增协议事件时，这里会编译报错，提醒你补 reducer 分支
-      const _exhaustive: never = event
+      // 穷尽性检查：以后往 StreamEvent 里新增协议事件时，这一行会编译报错，
+      // 提醒你回来补 reducer 分支。写成函数调用而不是 `const _x: never = event`，
+      // 是为了避免产生一个「已赋值但未使用」的变量（eslint 会报）。
+      assertNever(event)
       return state
     }
   }
+}
+
+/** 编译期穷尽性断言；运行时不做任何事 */
+function assertNever(value: never): void {
+  void value
 }

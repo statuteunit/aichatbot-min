@@ -27,3 +27,26 @@ export const PatchMessageSchema = z.object({
   messageId: z.string().min(1),
   content: z.string(),
 }).strict()
+
+export type CreateChatInput = z.infer<typeof CreateChatSchema>
+export type UpdateChatTitleInput = z.infer<typeof UpdateChatTitleSchema>
+export type AddMessagesInput = z.infer<typeof AddMessagesSchema>
+export type PatchMessageInput = z.infer<typeof PatchMessageSchema>
+
+// 供后续迁移中的 [id] / [id]/messages 路由使用：
+// 这些 helper 把「Zod 校验 + 统一 400 响应」收敛成一处，避免每个 handler 各写一遍。
+// 注意：它们**不是**泛型 any —— 入参类型为 unknown，出参由传入的 schema 精确推断。
+export function parseBody<T>(
+  schema: { safeParse: (input: unknown) => { success: true; data: T } | { success: false; error: { issues: unknown } } },
+  raw: unknown,
+  requestId: string,
+): { ok: true; data: T } | { ok: false; response: Response } {
+  const parsed = schema.safeParse(raw)
+  if (parsed.success) {
+    return { ok: true, data: parsed.data }
+  }
+  return {
+    ok: false,
+    response: Response.json({ error: 'INVALID_BODY', requestId }, { status: 400 }),
+  }
+}
