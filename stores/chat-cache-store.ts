@@ -1,12 +1,14 @@
 // 全局缓存，管理所有chats
 import { create } from 'zustand'
-import type { Message } from '@/types/chat'
+import type { UIMessage } from 'ai'
 
 // 单个chat摘要
 export interface ChatSummary {
   id: string
   title: string
   model: string
+  /** 会话模式：chat | inspector | coding。历史数据可能缺失，读的时候要给默认值 */
+  mode?: string
   updatedAt: string
 }
 
@@ -16,8 +18,10 @@ export interface MessageCursor {
 }
 
 // 消息缓存
+// 存 UIMessage 而不是自定义 Message：切到 @ai-sdk/react 的 useChat 后，
+// 缓存的唯一消费方就是 useChat 的 setMessages，形状必须一致，否则要来回转换。
 export interface ChatMessageCache {
-  recentMessages: Message[]
+  recentMessages: UIMessage[]
   hasMore: boolean
   nextCursor: MessageCursor | null
   loadedAt: number
@@ -36,7 +40,7 @@ interface ChatCacheState {
 
   setChatSnapshot: (
     chatId: string,
-    visibleMessages: Message[],
+    visibleMessages: UIMessage[],
     hasMore: boolean,
     nextCursor: MessageCursor | null,
   ) => void

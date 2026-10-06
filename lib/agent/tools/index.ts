@@ -3,17 +3,21 @@
 // 本文件是 Agent 工具对外的**唯一出口**，也是整条工具链上唯一声明 'server-only' 的地方。
 //
 // 为什么护栏集中在这里：
-//   listDir / readFile / grep / security 都需要能被 node:test 直接单测，而 'server-only'
-//   在纯 Node 环境下会抛错（它不是 Next.js 的 react-server 条件），导致测试无法运行。
-//   把它们隔离在「测试不引用的出口文件」之外，就能同时满足两件事：
+//   listDir / readFile / grep / gitLog / gitDiff / security 都需要能被 node:test 直接单测，
+//   而 'server-only' 在纯 Node 环境下会抛错（它不是 Next.js 的 react-server 条件），
+//   导致测试无法运行。把它们隔离在「测试不引用的出口文件」之外，就能同时满足两件事：
 //     ① 任何客户端组件引用 agentTools → Next.js 构建期直接失败（护栏生效）
 //     ② 工具实现仍可被单测覆盖（护栏不挡测试）
 //   代价：直接 import ./listDir 等子模块可以绕过护栏。**不要那样做**，一律从本文件引入。
 import 'server-only'
 import { tool } from 'ai'
+import { createCallGuard, type CallGuard, type CallRejection } from '../guard'
 import { ListDirInputSchema, listDir } from './listDir'
 import { ReadFileInputSchema, readFileTool } from './readFile'
 import { GrepInputSchema, grepTool } from './grep'
+import { GitLogInputSchema, gitLog } from './gitLog'
+import { GitDiffInputSchema, gitDiff } from './gitDiff'
+import { readSensitiveFileTool } from './readSensitiveFile'
 
 /**
  * P0 读取 = 自动执行；P1 提案 = 自动执行但不写盘；P2 编辑 / P3 验证 = 必须人工批准
@@ -36,16 +40,23 @@ export const toolRegistry: ToolMeta[] = [
   { name: 'listDir', permission: 'P0', needsApproval: false, outputLimit: '500 entries', timeoutMs: 10_000 },
   { name: 'readFile', permission: 'P0', needsApproval: false, outputLimit: '200KB / 单文件', timeoutMs: 10_000 },
   { name: 'grep', permission: 'P0', needsApproval: false, outputLimit: '200 matches', timeoutMs: 30_000 },
+  // git 类：只读子命令；超时给得比文件工具宽，因为大仓库的 log/diff 更慢
+  { name: 'gitLog', permission: 'P0', needsApproval: false, outputLimit: '50 commits / 200KB', timeoutMs: 15_000 },
+  { name: 'gitDiff', permission: 'P0', needsApproval: false, outputLimit: '200KB diff', timeoutMs: 30_000 },
+  // 唯一需要审批的工具（P2 语义）。它属于"演练"用途：把审批链路跑通，
+  // 同时验证「拒绝时模型能收到 reason 并调整策略」。
+  // 它不返回值，只返回键名/行数/字节数，所以没有扩大实际的信息暴露面。
+  { name: 'readSensitiveFile', permission: 'P2', needsApproval: true, outputLimit: '50 keys / 200KB', timeoutMs: 10_000 },
 ]
 
-/**
- * 交给模型的工具集。
+/*
+ * 基础工具定义（不带 guard）。
  *
  * 注意 inputSchema 用普通 z.object，**不要 .strict()**：
  * z.object 转 JSON Schema 本来就带 additionalProperties:false，部分 provider 会拒绝。
  * 输入校验由 AI SDK 在 execute 之前完成。
  */
-export const agentTools = {
+const baseTools = {
   listDir: tool({
     description:
       '列出工作区目录结构。用于先建立代码地图。会忽略 node_modules/.next/.git 等目录。',
@@ -66,6 +77,89 @@ export const agentTools = {
     inputSchema: GrepInputSchema,
     execute: async (input) => grepTool(input),
   }),
+
+  gitLog: tool({
+    description:
+      '查看最近的 git 提交历史（hash / 作者 / 日期 / 标题），可限定到某个文件或目录。' +
+      '用于判断某段代码是什么时候、因何被改动。仓库还没有提交时返回 EMPTY_REPO，不是错误。',
+    inputSchema: GitLogInputSchema,
+    execute: async (input) => gitLog(input),
+  }),
+
+  gitDiff: tool({
+    description:
+      '查看改动内容（unified diff + 每个文件的行数统计）。不给 base 时显示工作区未提交的改动；' +
+      '同时给 base 与 target 时显示两个 ref 之间的差异。用于确认"当前现状"而不是猜测。',
+    inputSchema: GitDiffInputSchema,
+    execute: async (input) => gitDiff(input),
+  }),
+
+  // 直接复用 readSensitiveFile.ts 里的定义：
+  // 它自带 needsApproval: true，不需要在这里重复声明。
+  readSensitiveFile: readSensitiveFileTool,
 }
+
+/**
+ * 把一次调用包上 guard。
+ *
+ * 拦截时不抛异常，而是返回与其它工具同形的 `{ ok: false, code, message }`
+ * 并附带行动指引：
+ *   ① 抛出异常在 SDK 侧会被记成工具执行失败，模型分不清"被限制"与"出故障"；
+ *   ② 现有所有工具都返回 ok/code 结构，模型已经会读它；
+ *   ③ 必须给 hint，否则模型大概率会重试同一个调用。
+ */
+function guardTool<T extends { execute?: (...args: never[]) => unknown }>(
+  name: string,
+  base: T,
+  guard: CallGuard,
+): T {
+  const baseExecute = base.execute
+  if (typeof baseExecute !== 'function') return base
+
+  return {
+    ...base,
+    execute: async (input: unknown, ...rest: unknown[]) => {
+      const rejection: CallRejection | null = guard.check(name, input)
+      if (rejection) {
+        return {
+          ok: false,
+          code: rejection.code,
+          message: rejection.message,
+          hint: rejection.hint,
+        }
+      }
+      return (baseExecute as (i: unknown, ...r: unknown[]) => unknown)(input, ...rest)
+    },
+  } as T
+}
+
+/**
+ * 按请求创建带 guard 的工具集。
+ *
+ * 注意：app/api/chat 必须用这个，不要用下面的 agentTools ——
+ * guard 的计数是"单次分析"语义，共享一份会把不同用户的预算混在一起。
+ */
+export function createAgentTools(guard: CallGuard) {
+  return {
+    listDir: guardTool('listDir', baseTools.listDir, guard),
+    readFile: guardTool('readFile', baseTools.readFile, guard),
+    grep: guardTool('grep', baseTools.grep, guard),
+    gitLog: guardTool('gitLog', baseTools.gitLog, guard),
+    gitDiff: guardTool('gitDiff', baseTools.gitDiff, guard),
+    readSensitiveFile: guardTool('readSensitiveFile', baseTools.readSensitiveFile, guard),
+  }
+}
+
+/** 便捷入口：每请求一个新的 guard */
+export function createGuardedAgentTools() {
+  return createAgentTools(createCallGuard())
+}
+
+/**
+ * 不带 guard 的工具集。
+ * 仅用于测试与「不需要预算约束」的场景（如 dev 探针）。
+ * 生产路径请用 createGuardedAgentTools()。
+ */
+export const agentTools = baseTools
 
 export type AgentTools = typeof agentTools

@@ -1,8 +1,11 @@
 // components/ui/textarea.tsx
-import { forwardRef, TextareaHTMLAttributes } from 'react';
+import { forwardRef } from 'react';
+import type { TextareaHTMLAttributes } from 'react';
 import { cn } from '@/lib/utils';
 
-interface TextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {}
+// 用类型别名而不是空接口继承：
+// `interface X extends Y {}` 没有任何成员，eslint 的 no-empty-object-type 会报错
+type TextareaProps = TextareaHTMLAttributes<HTMLTextAreaElement>;
 
 export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
   ({ className, ...props }, ref) => {

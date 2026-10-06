@@ -3,7 +3,7 @@
 // 关于 'server-only'：本文件**故意不加**该标记，因为它需要能被 node:test 直接单测。
 // 护栏统一收敛在 lib/agent/tools/index.ts —— 那是 Agent 工具对外的唯一出口。
 // 不要从客户端组件引用本文件（它依赖 node:fs）。
-import { realpath, stat } from 'node:fs/promises'
+import { readdir, readFile, realpath, stat } from 'node:fs/promises'
 import path from 'node:path'
 
 /** 错误码 */
@@ -14,6 +14,14 @@ export type ToolErrorCode =
   | 'OUTPUT_TOO_LARGE'
   | 'INVALID_INPUT'
   | 'INTERNAL_ERROR'
+  // git 类工具的错误码（对应 product-spec §3.4「代码源不可用」的降级要求）：
+  // 环境没有 git / 不是仓库 / 空仓库都必须是**明确的 code**，
+  // 既不能让模型看到含糊的 INTERNAL_ERROR，也不能让整个分析崩掉。
+  | 'GIT_UNAVAILABLE'
+  | 'GIT_TIMEOUT'
+  | 'NOT_A_REPO'
+  | 'EMPTY_REPO'
+  | 'GIT_FAILED'
 
 export class ToolError extends Error {
   constructor(readonly code: ToolErrorCode, message?: string) {
@@ -187,6 +195,71 @@ export async function assertFileSize(absPath: string, maxBytes = LIMITS.fileByte
   return info.size
 }
 
+/**
+ * 按文件名（basename）在工作区内搜索同名文件，返回相对路径候选。
+ *
+ * 为什么需要它：模型在证据里经常只写文件名而不是完整相对路径
+ * （实测：`prompt.ts:27`、`index.ts:23-25`，真实路径是 lib/agent/prompt.ts）。
+ * 此时按字面路径查会 404，用户点到的链接变成"死链"——这不是预期的交互。
+ *
+ * 语义约束（很关键，避免解析出歧义结果）：
+ *   - 只用于**兜底**：调用方必须先按字面路径查一次，查不到才来这里
+ *   - 命中 1 个 → 可以安全地用它；命中多个 → 必须让调用方报"歧义"而不是随便挑一个
+ *   - 仍然遵守敏感文件屏蔽与忽略目录，不会因为"搜索"就绕过护栏
+ *
+ * 性能：有界遍历（深度 + 文件数上限）。仓库再大也不会失控。
+ */
+export async function findFilesByBasename(params: {
+  workspaceRoot: string
+  basename: string
+  maxResults?: number
+  maxFiles?: number
+  maxDepth?: number
+}): Promise<string[]> {
+  const { workspaceRoot, basename, maxResults = 20, maxFiles = 8000, maxDepth = 8 } = params
+
+  // 只接受纯文件名，避免把相对路径片段也拿来搜
+  if (!basename || basename.includes('/') || basename.includes('\\') || basename === '.' || basename === '..') {
+    return []
+  }
+
+  const root = await realpathWorkspaceRoot(workspaceRoot)
+  const matches: string[] = []
+  let visited = 0
+
+  async function walk(absDir: string, relDir: string, depth: number): Promise<void> {
+    if (depth > maxDepth || matches.length >= maxResults || visited >= maxFiles) return
+
+    let dirents
+    try {
+      dirents = await readdir(absDir, { withFileTypes: true })
+    } catch {
+      return   // 无权限的目录直接跳过，不影响其它分支
+    }
+
+    for (const dirent of dirents) {
+      if (matches.length >= maxResults || visited >= maxFiles) return
+      const rel = relDir ? `${relDir}/${dirent.name}` : dirent.name
+
+      if (dirent.isDirectory()) {
+        if ((IGNORED_DIRS as readonly string[]).includes(dirent.name)) continue
+        // 不跟随符号链接（dirent.isDirectory() 对软链返回 false），与 listDir 一致
+        await walk(path.join(absDir, dirent.name), rel, depth + 1)
+      } else if (dirent.isFile()) {
+        visited += 1
+        if (dirent.name !== basename) continue
+        // 敏感文件不出现在候选里——否则"搜索"就成了绕过屏蔽的通道
+        if (isSensitivePath(rel)) continue
+        matches.push(rel)
+      }
+    }
+  }
+
+  await walk(root, '', 1)
+  return matches
+}
+
+
 /** 统一的错误 → 工具返回体转换，保证模型看到的是稳定结构而不是堆栈 */
 export function toToolErrorResult(err: unknown): { ok: false; code: ToolErrorCode; message: string } {
   if (err instanceof ToolError) {
@@ -197,4 +270,92 @@ export function toToolErrorResult(err: unknown): { ok: false; code: ToolErrorCod
     code: 'INTERNAL_ERROR',
     message: err instanceof Error ? err.message : String(err),
   }
+}
+
+/** inspectSensitiveFilePath 的返回体：只有结构信息，没有任何值 */
+export interface SensitiveFileStructure {
+  path: string
+  exists: boolean
+  /** 总行数；文件不存在时为 0 */
+  totalLines: number
+  byteSize: number
+  /**
+   * 只含**键名**，不含值。
+   * 解析规则：跳过空行与 `#` 注释，取第一个 `=` 之前的 trimmed 文本。
+   */
+  keys: string[]
+  /** 键名数量达到上限，说明还有未列出的键 */
+  keysTruncated: boolean
+}
+
+/**
+ * 读取一个**敏感文件的结构**（键名 + 行数 + 字节数），**永不返回任何值**。
+ *
+ * 为什么单独写这个函数，而不是给 resolveWorkspaceFile 加一个 allowSensitive 开关：
+ *   ① 它把「可以碰敏感文件」从「可以读敏感文件」里剥离出来。即使调用方被
+ *      提示注入控制，拿到的也只有键名，没有密钥值。
+ *   ② 无需在护栏内部开条件分支——护栏依旧对所有常规路径生效，
+ *      这个函数是**唯一**被明确设计成"透明地看一眼"的入口，
+ *      将来审计时可以只盯它一个。
+ *
+ * ⚠️ 调用方职责：必须先自行确认 path 是工作区内的相对路径
+ *    （不要传绝对路径、不要传含 `..` 的路径）。这里为了能访问敏感文件，
+ *    没有走 resolveWorkspaceFile（它会拒绝这些路径）。
+ *    当前唯一调用方是 readSensitiveFile 工具，它在调用前用 `..` 做了显式校验。
+ */
+export async function inspectSensitiveFilePath(params: {
+  workspaceRoot: string
+  relativePath: string
+  maxKeys?: number
+}): Promise<SensitiveFileStructure> {
+  const { workspaceRoot, relativePath, maxKeys = 50 } = params
+  const absPath = path.resolve(workspaceRoot, relativePath)
+  const result: SensitiveFileStructure = {
+    path: relativePath,
+    exists: false,
+    totalLines: 0,
+    byteSize: 0,
+    keys: [],
+    keysTruncated: false,
+  }
+
+  let info
+  try {
+    info = await stat(absPath)
+  } catch {
+    // 文件不存在不是错误——「.env 存在吗」本身就是有效的问题
+    return result
+  }
+  if (!info.isFile()) {
+    throw new ToolError('INVALID_INPUT', '目标不是普通文件')
+  }
+
+  // 上限远大于 LIMITS.fileBytes：敏感文件通常很小，但要防止有人把大文件伪装成 .env
+  if (info.size > LIMITS.fileBytes) {
+    throw new ToolError('OUTPUT_TOO_LARGE', `文件 ${info.size} 字节，超过上限 ${LIMITS.fileBytes}`)
+  }
+
+  const raw = await readFile(absPath, 'utf8')
+  const lines = raw.split(/\r?\n/)
+  const keys: string[] = []
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const eq = trimmed.indexOf('=')
+    if (eq <= 0) continue
+    const key = trimmed.slice(0, eq).trim()
+    if (!key) continue
+    if (keys.length >= maxKeys) {
+      result.keysTruncated = true
+      break
+    }
+    if (!keys.includes(key)) keys.push(key)
+  }
+
+  result.exists = true
+  result.totalLines = lines.length
+  result.byteSize = info.size
+  result.keys = keys
+  return result
 }

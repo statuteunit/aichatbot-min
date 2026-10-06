@@ -1,33 +1,42 @@
 // components/messageList.tsx
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef } from 'react';
-import type { Message } from '@/types/chat';
+import { useCallback, useEffect, useRef } from 'react';
+import type { UIMessage } from 'ai';
 import { MessageItem } from '@/components/messageItem';
+import type { MessageStatus } from '@/types/stream';
 
 interface MessageListProps {
-  messages: Message[]
+  messages: UIMessage[]
+  /** 当前流式状态；历史加载时不传，视为已完成 */
+  status?: MessageStatus
   hasMore?: boolean
   isLoadingOlder?: boolean
   onLoadOlder?: () => void
   /** 出错时的重试入口 */
   onReload?: () => void
+  /** 对 needsApproval 的工具做批准/拒绝决定 */
+  onApprovalResponse?: (params: { id: string; approved: boolean; reason?: string }) => void
 }
 
-/** 工具名 → 展示文案（Day 5 接上真实工具后在此扩展） */
+/** 工具名 → 展示文案 */
 const TOOL_LABELS: Record<string, string> = {
   listDir: '正在浏览目录',
   readFile: '正在读取文件',
   grep: '正在检索代码',
-  getGitDiff: '正在查看改动',
+  gitLog: '正在查看提交历史',
+  gitDiff: '正在查看改动',
+  readSensitiveFile: '正在查看敏感文件结构',
 }
 
 export function MessageList({
   messages,
+  status = 'done',
   hasMore = false,
   isLoadingOlder = false,
   onLoadOlder,
   onReload,
+  onApprovalResponse,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null)
@@ -46,16 +55,32 @@ export function MessageList({
     }
   }, [onLoadOlder, isLoadingOlder, hasMore])
 
-  // 最后一条 assistant 消息承载当前流状态
-  const tail = useMemo(() => {
+  // 正在跑的工具名：取最后一条助手消息里最后一个 tool part。
+  // 不用 useMemo —— 依赖是 messages，每次流式增量都会变，记忆化没有收益。
+  const runningToolName = (() => {
+    if (status !== 'tool') return undefined
     for (let i = messages.length - 1; i >= 0; i -= 1) {
-      if (messages[i].role === 'assistant') return messages[i]
+      const message = messages[i]
+      if (message.role !== 'assistant') continue
+      const toolParts = message.parts.filter(
+        (part) => part.type.startsWith('tool-') || part.type === 'dynamic-tool',
+      )
+      const last = toolParts[toolParts.length - 1]
+      if (!last) return undefined
+      if (last.type === 'dynamic-tool') {
+        return (last as { toolName?: string }).toolName
+      }
+      return last.type.slice('tool-'.length)
     }
     return undefined
-  }, [messages])
+  })()
 
-  const status = tail?.status ?? 'done'
-  const lastTool = tail?.tools?.[tail.tools.length - 1]
+  // 是否已有助手消息在承载流式内容：
+  // 有的话就不显示独立的"生成中"气泡，避免出现两个加载指示
+  const tailIsAssistantStreaming =
+    (status === 'streaming' || status === 'tool') &&
+    messages.length > 0 &&
+    messages[messages.length - 1].role === 'assistant'
 
   return (
     <div
@@ -70,12 +95,19 @@ export function MessageList({
       )}
 
       {/* 消息列表 */}
-      {messages.map((message) => (
-        <MessageItem key={message.id} message={message} onReload={onReload} />
+      {messages.map((message, index) => (
+        <MessageItem
+          key={message.id}
+          message={message}
+          // 只有最后一条消息才呈现当前流式状态，历史消息一律 done
+          status={index === messages.length - 1 ? status : 'done'}
+          onReload={onReload}
+          onApprovalResponse={onApprovalResponse}
+        />
       ))}
 
-      {/* 流式 / 工具 / 审批 / 错误 状态条 */}
-      {status === 'streaming' && (
+      {/* 尚未出现助手消息时的等待指示 */}
+      {status === 'streaming' && !tailIsAssistantStreaming && (
         <div className="flex justify-start">
           <div className="bg-gray-100 rounded-lg px-4 py-2">
             <div className="flex space-x-1">
@@ -87,18 +119,23 @@ export function MessageList({
         </div>
       )}
 
+      {/* 工具运行状态：product-spec §11 要求「工具调用过程实时可见」 */}
       {status === 'tool' && (
         <div className="flex justify-start">
           <div className="bg-amber-50 text-amber-800 border border-amber-200 rounded-lg px-4 py-2 text-sm">
-            {lastTool ? `${TOOL_LABELS[lastTool.toolName] ?? `正在调用 ${lastTool.toolName}`}…` : '正在调用工具…'}
+            {runningToolName
+              ? `${TOOL_LABELS[runningToolName] ?? `正在调用 ${runningToolName}`}…`
+              : '正在调用工具…'}
           </div>
         </div>
       )}
 
       {status === 'approval' && (
         <div className="flex justify-start">
-          <div className="bg-violet-50 text-violet-800 border border-violet-200 rounded-lg px-4 py-2 text-sm">
-            等待你批准操作（审批交互将在后续阶段接入）
+          {/* 审批的详细内容（工具名、参数、批准/拒绝按钮）由消息内的
+              ApprovalCard 承载，这里只放一个位置提示，避免两处重复。 */}
+          <div className="text-xs text-violet-700 px-1">
+            等待你就上方的操作做出决定
           </div>
         </div>
       )}
@@ -106,7 +143,7 @@ export function MessageList({
       {status === 'error' && (
         <div className="flex justify-start">
           <div className="bg-red-50 text-red-700 border border-red-200 rounded-lg px-4 py-2 text-sm flex items-center gap-3">
-            <span className="break-all">{tail?.errorText ?? '生成失败'}</span>
+            <span className="break-all">生成失败，请重试</span>
             {onReload && (
               <button
                 type="button"

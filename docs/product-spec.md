@@ -26,9 +26,18 @@
 
 ### 1.2 尚未具备的能力
 
-- 模型**无法调用任何外部能力**：`tools/` 目录里只有 `calculator`、`getCurrentTime` 两个纯计算工具，且 `app/api/chat/route.ts` 虽然已经 import 了 `streamText / stepCountIs / chatTools`，但请求处理主体仍是裸 `fetch` 透传，多步工具循环没有真正接上。
-- 前端**丢弃工具调用事件**：`hooks/useChat.ts` 只解析 `choices[0].delta.content`，任何 `tool_calls` 增量都会被静默忽略。
-- 数据模型**无法承载工具记录**：`Message` 只有 `role / content / createdAt`。
+> 本节按代码实际状态维护。早期版本曾声称 `tools/` 里已有 `calculator`、`getCurrentTime`
+> 且 `/api/chat` 已 import `streamText`，与代码不符，已更正。
+
+- **只读检索已可用**：`lib/agent/tools/` 已实现 `listDir / readFile / grep / gitLog / gitDiff` 五个 P0 只读工具，
+  路径白名单、敏感文件屏蔽、输出上限在 `lib/agent/security.ts` 与 `lib/agent/exec.ts` 中统一实现。
+- **多步工具循环已接上**：`app/api/chat/route.ts` 使用 `streamText + stopWhen: stepCountIs(8)`，
+  工具集来自 `lib/agent/tools/index.ts`，产物是 AI SDK 的 UI Message Stream。
+- **模型仍无法写盘**：P1/P2/P3 工具（`createPatchProposal`、`applyApprovedPatch`、`runApprovedValidation`）
+  均未实现——这是 V1 的硬边界，见 §2.4。
+- 数据模型**无法承载工具记录与结构化内容**：`Message` 只有 `role / content / createdAt`，
+  没有 `parts`，因此历史消息无法回放工具轨迹（§8 的 `Message.parts` 尚未落地）。
+- `tools/` 目录不存在——P0 工具统一放在 `lib/agent/tools/`；`calculator` / `getCurrentTime` 从未实现。
 
 ### 1.3 为什么要 Agent 化
 
@@ -198,7 +207,9 @@ applyApprovedPatch → approve/reject validation → runApprovedValidation → r
 | `applyApprovedPatch` | `proposalId` | 实际变更文件、应用结果 | P2；需审批；仅应用已批准、未过期且基线 hash 一致的提案 |
 | `runApprovedValidation` | `proposalId`, `taskId` | 退出码、截断日志、耗时 | P3；需审批；`taskId` 仅限 `lint/typecheck/test` 等注册任务 |
 
-**已存在并保留**：`calculator`、`getCurrentTime`（无副作用，用于演示与基础计算）。
+**已实现并保留（P0 只读）**：`listDir`、`readFile`、`grep`、`gitLog`、`gitDiff` —— 见 `lib/agent/tools/`。
+
+**从未实现**：`calculator`、`getCurrentTime`（早期文档曾把它们列为"已存在"，与代码不符）。
 
 **明确不实现**：通用 `writeFile`、通用 `editFile`、任意 `runCommand`、`installPackage`、`deleteFile`、`renameFile`、`gitCommit`、`gitPush`、数据库迁移、部署。
 

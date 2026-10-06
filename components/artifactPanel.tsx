@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useArtifact } from '@/stores/useArtifact';
+import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 
 export function ArtifactPanel() {
@@ -85,9 +86,38 @@ export function ArtifactPanel() {
             </div>
           </div>
         ) : (
-          <pre className="font-mono text-sm whitespace-pre-wrap break-words bg-gray-50 p-4 rounded">
-            {artifact.content}
-          </pre>
+          // readFileTool 返回的内容每行已带 `行号: ` 前缀，这里据此高亮目标区间。
+          // 高亮的意义：点击 file:line 之后要能**一眼看到** AI 引用的那几行，
+          // 否则打开 500 行文件等于没定位。
+          <div className="font-mono text-sm bg-gray-50 p-4 rounded">
+            {artifact.content.split('\n').map((line, index) => {
+              const lineNo = Number.parseInt(line, 10)
+              const inRange =
+                artifact.startLine !== undefined &&
+                artifact.endLine !== undefined &&
+                Number.isInteger(lineNo) &&
+                lineNo >= artifact.startLine &&
+                lineNo <= artifact.endLine
+              return (
+                <div
+                  key={index}
+                  className={cn(
+                    'whitespace-pre-wrap break-words',
+                    inRange && 'bg-amber-100 -mx-2 px-2',
+                  )}
+                >
+                  {line}
+                </div>
+              )
+            })}
+            {artifact.endLine !== undefined && (
+              <p className="mt-3 pt-3 border-t text-xs text-gray-500 font-sans not-italic">
+                已定位到第 {artifact.startLine}
+                {artifact.endLine !== artifact.startLine ? `–${artifact.endLine}` : ''} 行
+                （黄色标记处）
+              </p>
+            )}
+          </div>
         )}
       </div>
     </div>

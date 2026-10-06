@@ -1,6 +1,5 @@
 'use client'
 
-import { useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { useSession } from "next-auth/react"
@@ -46,10 +45,13 @@ export function Siderbar({ isOpen, onClose, onNewChat, onSelectChat, currentChat
 
   return (
     <>
-      {/* 遮罩层 */}
+      {/* 遮罩层。
+          z 层级：z-30 —— 必须低于顶部栏（z-40），否则侧边栏打开时
+          连顶部栏本身都点不动（关闭按钮会被遮罩吃掉）。
+          高于页面内容（无 z / z-auto），所以仍能拦住误点。 */}
       {isOpen && (
         <div
-          className="fixed inset-0 bg-black/50 z-40"
+          className="fixed inset-0 bg-black/50 z-30"
           onClick={onClose}
         />
       )}
@@ -87,7 +89,7 @@ export function Siderbar({ isOpen, onClose, onNewChat, onSelectChat, currentChat
               暂无对话
             </div>
           ) : (
-            safeChats.map((chat: any) => (
+            safeChats.map((chat) => (
               <button
                 key={chat.id}
                 onClick={() => onSelectChat(chat.id)}

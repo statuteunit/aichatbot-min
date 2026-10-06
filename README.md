@@ -87,11 +87,18 @@ PatchProposal 保存的是待审查的变更，不是“模型已经执行过的
 
 # 工具设计
 设置为受约束的工具集
+
+> 状态标注（按代码实际实现维护）：
+> - ✅ 已实现：`listDir`、`readFile`、`grep`、`gitLog`、`gitDiff`（均为 P0 只读，见 `lib/agent/tools/`）
+> - ⬜ 未实现：`EditorTools` 三项（P1/P2/P3，V1 的编辑链路尚未开始）
+> - ❌ 从未实现：`calculator`、`getCurrentTime`
+
 type InspectorTools =
   | "listDir"
   | "readFile"
   | "grep"
-  | "getGitDiff"
+  | "gitLog"      // Day 7 补充：判断代码"为什么长这样"
+  | "gitDiff"     // Day 7 补充：确认当前改动现状
 
 type EditorTools =
   | "createPatchProposal"

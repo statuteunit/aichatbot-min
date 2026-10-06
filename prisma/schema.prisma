@@ -67,6 +67,7 @@ model Chat {
   id        String    @id @default(uuid())
   title     String
   model     String
+  mode      String    @default("chat") //chat|inspector|coding
   userId    String
   user      User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
   createdAt DateTime  @default(now())

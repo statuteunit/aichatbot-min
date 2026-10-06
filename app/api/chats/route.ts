@@ -26,8 +26,20 @@ export const POST = withApiLogging({
       return Response.json({ error: 'INVALID_BODY', requestId }, { status: 400 })
     }
 
-    const chat = await createChat(parsed.data.model ?? DEFAULT_CHAT_MODEL, userId)
-    logEvent('info', 'chats.create', { requestId, userId, chatId: chat.id, model: chat.model })
+    // mode 来自 CreateChatSchema（含 .default('chat')），所以旧客户端不传也不会报错。
+    // 之前这里漏传 mode，导致无论请求什么，落库永远是 schema 默认值——mode 是个死字段。
+    const chat = await createChat(
+      parsed.data.model ?? DEFAULT_CHAT_MODEL,
+      userId,
+      parsed.data.mode,
+    )
+    logEvent('info', 'chats.create', {
+      requestId,
+      userId,
+      chatId: chat.id,
+      model: chat.model,
+      mode: chat.mode,
+    })
     return Response.json(chat)
   },
 })

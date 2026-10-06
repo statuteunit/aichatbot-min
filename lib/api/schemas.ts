@@ -4,9 +4,30 @@ import { DEFAULT_CHAT_MODEL } from '@/lib/model'
 
 export const CreateChatSchema = z.object({
   model: z.string().min(1).default(DEFAULT_CHAT_MODEL),
+  mode: z.enum(['chat', 'inspector', 'coding']).default('chat'),
 }).strict()   // 传 userId 会直接 400，而不是被静默忽略
 
 export const UpdateChatTitleSchema = z.object({ title: z.string().max(200) }).strict()
+
+/**
+ * PATCH /api/chats/[id] 的请求体。
+ * 标题与模式各自可选，但至少给一个——否则是一次无意义的写入。
+ * 用 superRefine 而不是 .refine，便于把错误挂在请求体根上。
+ */
+export const UpdateChatSchema = z
+  .object({
+    title: z.string().max(200).optional(),
+    mode: z.enum(['chat', 'inspector', 'coding']).optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.title === undefined && value.mode === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'title 与 mode 至少提供一个',
+      })
+    }
+  })
 
 export const AddMessagesSchema = z.object({
   userMessage: z.object({
