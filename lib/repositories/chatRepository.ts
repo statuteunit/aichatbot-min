@@ -79,10 +79,28 @@ export async function createChat(model: string, userId: string, mode = 'chat') {
 export async function getChatById(
   id: string,
   userId: string,
-): Promise<{ id: string; mode: string; model: string; title: string } | null> {
+): Promise<{
+  id: string
+  mode: string
+  model: string
+  title: string
+  /** 滚动摘要。用于拼接 system prompt */
+  summary: string | null
+  /** 摘要覆盖到哪条消息为止。用于裁剪历史 */
+  summaryUpToMsgId: string | null
+} | null> {
   return prisma.chat.findFirst({
     where: { id, userId },
-    select: { id: true, mode: true, model: true, title: true },
+    // summary / summaryUpToMsgId 用于聊天链路裁剪历史：
+    // 没有它们就无法知道"哪些历史已被摘要覆盖"。
+    select: {
+      id: true,
+      mode: true,
+      model: true,
+      title: true,
+      summary: true,
+      summaryUpToMsgId: true,
+    },
   })
 }
 
@@ -317,6 +335,31 @@ export async function updateChatMode(id: string, mode: string, userId: string) {
     data: {
       mode,
       updatedAt: new Date(),
+    },
+  })
+}
+
+/**
+ * 写入滚动摘要。
+ *
+ * 注意 updatedAt：**不要**用它覆盖 Chat.updatedAt。
+ * Chat.updatedAt 表示"会话活跃时间"，用于侧边栏排序；
+ * 摘要刷新是后台行为，不该让一个老会话因为刷新摘要就跳到列表顶部。
+ * 所以只更新 summaryUpdatedAt。
+ */
+export async function updateChatSummary(params: {
+  chatId: string
+  userId: string
+  summary: string
+  upToMessageId: string
+}): Promise<{ count: number }> {
+  const { chatId, userId, summary, upToMessageId } = params
+  return prisma.chat.updateMany({
+    where: { id: chatId, userId },
+    data: {
+      summary,
+      summaryUpToMsgId: upToMessageId,
+      summaryUpdatedAt: new Date(),
     },
   })
 }

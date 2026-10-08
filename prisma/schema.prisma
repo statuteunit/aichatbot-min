@@ -64,15 +64,20 @@ model VerificationToken {
 }
 
 model Chat {
-  id        String    @id @default(uuid())
-  title     String
-  model     String
-  mode      String    @default("chat") //chat|inspector|coding
-  userId    String
-  user      User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  messages  Message[]
+  id               String    @id @default(uuid())
+  title            String
+  model            String
+  mode             String    @default("chat") //chat|inspector|coding
+  userId           String
+  user             User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  messages         Message[]
+  /// 滚动摘要：对「已摘要位置之前」的历史的压缩描述
+  summary          String?
+  /// 摘要覆盖到最后哪一条消息。用它做边界，避免重复摘要
+  summaryUpToMsgId String?
+  summaryUpdatedAt DateTime?
 
   @@index([userId])
   @@index([updatedAt])
