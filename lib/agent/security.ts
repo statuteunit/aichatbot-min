@@ -1,8 +1,5 @@
 // lib/agent/security.ts
-//
-// 关于 'server-only'：本文件**故意不加**该标记，因为它需要能被 node:test 直接单测。
-// 护栏统一收敛在 lib/agent/tools/index.ts —— 那是 Agent 工具对外的唯一出口。
-// 不要从客户端组件引用本文件（它依赖 node:fs）。
+// 不要从客户端组件引用本文件（它依赖 node:fs）
 import { readdir, readFile, realpath, stat } from 'node:fs/promises'
 import path from 'node:path'
 
@@ -14,7 +11,7 @@ export type ToolErrorCode =
   | 'OUTPUT_TOO_LARGE'
   | 'INVALID_INPUT'
   | 'INTERNAL_ERROR'
-  // git 类工具的错误码（对应 product-spec §3.4「代码源不可用」的降级要求）：
+  // git 类工具的错误码：
   // 环境没有 git / 不是仓库 / 空仓库都必须是**明确的 code**，
   // 既不能让模型看到含糊的 INTERNAL_ERROR，也不能让整个分析崩掉。
   | 'GIT_UNAVAILABLE'
@@ -40,8 +37,10 @@ export const LIMITS = {
   /** listDir 默认与最大深度 */
   listDepthDefault: 3,
   listDepthMax: 5,
-  /** 单个匹配行的展示长度上限 */
+  /** 单个匹配行 / 上下文行的展示长度上限 */
   matchLineChars: 500,
+  /** grep 上下文行数上限（每个命中前后各 N 行） */
+  grepContextMax: 10,
   /** grep 扫描的文件数上限，防止遍历失控 */
   grepMaxFilesScanned: 5000,
 } as const
@@ -199,10 +198,9 @@ export async function assertFileSize(absPath: string, maxBytes = LIMITS.fileByte
  * 按文件名（basename）在工作区内搜索同名文件，返回相对路径候选。
  *
  * 为什么需要它：模型在证据里经常只写文件名而不是完整相对路径
- * （实测：`prompt.ts:27`、`index.ts:23-25`，真实路径是 lib/agent/prompt.ts）。
  * 此时按字面路径查会 404，用户点到的链接变成"死链"——这不是预期的交互。
  *
- * 语义约束（很关键，避免解析出歧义结果）：
+ * 语义约束：
  *   - 只用于**兜底**：调用方必须先按字面路径查一次，查不到才来这里
  *   - 命中 1 个 → 可以安全地用它；命中多个 → 必须让调用方报"歧义"而不是随便挑一个
  *   - 仍然遵守敏感文件屏蔽与忽略目录，不会因为"搜索"就绕过护栏
@@ -292,15 +290,15 @@ export interface SensitiveFileStructure {
  * 读取一个**敏感文件的结构**（键名 + 行数 + 字节数），**永不返回任何值**。
  *
  * 为什么单独写这个函数，而不是给 resolveWorkspaceFile 加一个 allowSensitive 开关：
- *   ① 它把「可以碰敏感文件」从「可以读敏感文件」里剥离出来。即使调用方被
+ *   它把「可以碰敏感文件」从「可以读敏感文件」里剥离出来。即使调用方被
  *      提示注入控制，拿到的也只有键名，没有密钥值。
- *   ② 无需在护栏内部开条件分支——护栏依旧对所有常规路径生效，
+ *   无需在护栏内部开条件分支——护栏依旧对所有常规路径生效，
  *      这个函数是**唯一**被明确设计成"透明地看一眼"的入口，
  *      将来审计时可以只盯它一个。
  *
  * ⚠️ 调用方职责：必须先自行确认 path 是工作区内的相对路径
- *    （不要传绝对路径、不要传含 `..` 的路径）。这里为了能访问敏感文件，
- *    没有走 resolveWorkspaceFile（它会拒绝这些路径）。
+ *    这里为了能访问敏感文件，
+ *    没有走 resolveWorkspaceFile,会拒绝。
  *    当前唯一调用方是 readSensitiveFile 工具，它在调用前用 `..` 做了显式校验。
  */
 export async function inspectSensitiveFilePath(params: {

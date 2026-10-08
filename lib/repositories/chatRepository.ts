@@ -184,46 +184,27 @@ export async function upsertAssistantMessage(params: {
   const content = params.content ?? extractTextFromParts(message.parts)
 
   // ── id 兜底 ──────────────────────────────────────────────────────────
-  // 为什么必须有：SDK 可能给出**空字符串** id（实测日志 messageIdLength:0）。
+  // 为什么必须有：SDK 可能给出**空字符串** id（实测 messageIdLength:0）。
   // 空串满足 TEXT NOT NULL、也满足主键唯一性，于是 upsert 从第二次起
   // 永远命中同一行、在 update 分支里**覆盖上一条 AI 消息**，
   // 表现为"AI 消息经常丢失"。
   //
   // 这里兜一个 uuid：即使客户端仍给空 id，每条消息也会落到独立主键上。
-  // 调用方仍会在日志里看到 fallbackUsed 标记，便于判断 SDK 侧是否修好。
   const requestedId = typeof message.id === 'string' ? message.id.trim() : ''
   const messageId = requestedId.length > 0 ? requestedId : randomUUID()
-  const fallbackUsed = requestedId.length === 0
   // ────────────────────────────────────────────────────────────────────
 
-  // ── 诊断日志（落库决策）──────────────────────────────────────────────
-  // 区分三种"看起来都是没消息"的情况：
-  //   ① willSkip=true   → 中止且无文本，刻意不写（设计如此，不是 bug）
-  //   ② 继续往下且 content 为空 → 写了一行空记录（历史里会是空白气泡）
-  //   ③ 根本没进这个函数 → onFinish 没跑（看 diag.chat.start / onFinish 配对）
-  logEvent('info', 'diag.persist.upsert', {
-    chatId,
-    messageId,
-    requestedMessageIdType: typeof message.id,
-    requestedMessageIdLength: typeof message.id === 'string' ? message.id.length : null,
-    fallbackUsed,
-    contentLength: content.length,
-    isAborted,
-    role: 'assistant',
-  })
-
-  if (!content) {
-    logEvent('warn', 'diag.persist.emptyContent', {
+  // 兜底被触发 = 上游给的 id 不可用，是真正的异常信号。
+  // 只在触发时输出，所以它出现就意味着 SDK/客户端侧又退化了 ——
+  // 这正是它值得作为**长期告警**保留的原因（正常情况下永远不出现）。
+  if (requestedId.length === 0) {
+    logEvent('warn', 'chat.assistantIdFallback', {
       chatId,
-      messageId,
-      isAborted,
-      willSkip: isAborted,
-      hasParts: Array.isArray(message.parts),
-      partTypes: message.parts?.map((p) => p.type).join(',') || 'no-parts',
-      contentParamProvided: params.content !== undefined,
+      generatedId: messageId,
+      requestedIdType: typeof message.id,
+      requestedIdLength: typeof message.id === 'string' ? message.id.length : null,
     })
   }
-  // ────────────────────────────────────────────────────────────────────
 
   // 中止且无任何文本（用户刚发就停）：不要写入空白记录。
   // 这一步放在事务外，省一次数据库往返（所有权校验在事务内仍然保留）。

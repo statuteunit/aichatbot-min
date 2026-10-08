@@ -128,7 +128,18 @@ function guardTool<T extends { execute?: (...args: never[]) => unknown }>(
           hint: rejection.hint,
         }
       }
-      return (baseExecute as (i: unknown, ...r: unknown[]) => unknown)(input, ...rest)
+      const result = await (baseExecute as (i: unknown, ...r: unknown[]) => unknown)(input, ...rest)
+
+      // 执行完成后回报实际输出体积，供字节预算累计。
+      // 用 JSON 长度近似即可 —— 不需要精确到 token，
+      // 目的是拦住"读了几个超大文件把上下文烧光"这种情况。
+      try {
+        guard.report(name, JSON.stringify(result)?.length ?? 0)
+      } catch {
+        // 结果不可序列化（理论上不会）时忽略，绝不能因此让工具调用失败
+      }
+
+      return result
     },
   } as T
 }

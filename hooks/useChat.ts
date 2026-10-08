@@ -115,14 +115,16 @@ const requestPayload: {
  *
  * ⚠️ 必须显式提供，不能依赖 SDK 默认行为。
  *
- * 实测（2026-10-06 日志）：不传 generateId 时，Assistant 响应消息的 id 是**空字符串**：
- *     {"event":"diag.chat.onFinish","messageId":"","contentLength":1899}
- *     {"event":"diag.persist.upsert","messageIdType":"string","messageIdLength":0}
+ * 实测（2026-10-06）：不传 generateId 时，Assistant 响应消息的 id 是**空字符串** ——
+ * 当时的诊断日志显示 `messageId:""`、`messageIdLength:0`。
  *
  * 空字符串会造成灾难性后果 —— 它满足 TEXT NOT NULL，也满足主键唯一性，
  * 于是 upsertAssistantMessage 的 upsert 从第二次起一直在**覆盖同一行**：
  *     upsert({ where: { id: '' }, update: { content }, ... })
  * 表现为「AI 消息经常丢失」，实际是每次都覆盖上一条。
+ *
+ * 现在服务端会在遇到空 id 时打 `chat.assistantIdFallback` 告警；
+ * 只要那条日志不再出现，就说明这里的 generateId 一直在正常工作。
  *
  * 用 crypto.randomUUID（浏览器与 Node 都原生支持）保证非空且唯一。
  * 与服务端 messageId 兜底（chatRepository.upsertAssistantMessage）构成双保险。

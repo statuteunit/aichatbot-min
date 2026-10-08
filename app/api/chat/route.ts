@@ -6,6 +6,7 @@ import { requireUserId } from '@/lib/api/auth'
 import { withApiLogging, logEvent } from '@/lib/api/observability'
 import { createGuardedAgentTools } from '@/lib/agent/tools'
 import { getSystemPrompt, isChatMode, type ChatMode } from '@/lib/agent/prompt'
+import { collectPaths, unverifiedCitations } from '@/lib/agent/citations'
 import {
     getChatById,
     saveUserMessage,
@@ -67,23 +68,8 @@ export const POST = withApiLogging({
         const model = resolveModelId(parsed.data.model)
         const uiMessages = messages as UIMessage[]
 
-        // ── 诊断日志（起点）──────────────────────────────────────────────
-        // 与 diag.chat.onFinish 配对使用：
-        //   有 START 无 FINISH → 流被中断（用户停止 / 刷新 / 断网 / 服务端重启）
-        //                        → 助手记录从未落库，这是"消息丢失"的主因
-        //   有 START 有 FINISH → 落库确实执行了，问题在内容为空（见 FINISH 日志）
-        logEvent('info', 'diag.chat.start', {
-            requestId,
-            chatId: chatId ?? null,
-            model,
-            uiMessageCount: uiMessages.length,
-            roles: uiMessages.map((m) => m.role).join(','),
-            lastUserMessageId: [...uiMessages].reverse().find((m) => m.role === 'user')?.id ?? null,
-        })
-        // ────────────────────────────────────────────────────────────────
-
         // 会话模式必须从服务端读，不能相信客户端传参：
-        // mode 决定提示词严格程度，属于授权边界，与 Day 1–2 处理 userId 的原则一致。
+        // mode 决定提示词严格程度，属于授权边界
         // 新会话（还没有 chatId）用 inspector：本应用的核心用途就是代码分析，
         // 与 prisma schema 的 @default("chat") 不同是刻意的——schema 默认值面向"最小权限"，
         // 这里是"本应用的实际用途"。要改 schema 默认值需先确认历史会话的预期行为。
@@ -123,6 +109,10 @@ export const POST = withApiLogging({
         // 不能复用模块级常量：guard 的计数是"单次分析"语义，共享会把不同用户的预算混在一起。
         const tools = createGuardedAgentTools()
 
+        // 本次会话中工具真实返回过的路径，用于 onFinish 做引用交叉验证。
+        // 注意作用域：必须在 streamText 之外声明，因为 onFinish 回调里要用它。
+        const toolCallPaths = new Set<string>()
+
         const result = streamText({
             model: openrouter(model),
             system: getSystemPrompt(mode),
@@ -138,25 +128,25 @@ export const POST = withApiLogging({
                 })
             },
             onFinish: ({ usage, steps, finishReason }) => {
-                // ── 诊断日志（流结束）──────────────────────────────────────
-                // 与 diag.chat.onFinish 区分：这是**模型侧**流结束，
-                // 而 diag.chat.onFinish 是**UI Message Stream 侧**结束。
-                // 若只看到这一条、没有 diag.chat.onFinish，说明
-                // 模型出完了但 UI 流的 onFinish 没触发（罕见的 SDK 行为）。
-                logEvent('info', 'diag.chat.streamFinish', {
-                    requestId,
-                    chatId: chatId ?? null,
-                    finishReason,
-                    stepCount: steps.length,
-                    completedSteps: steps.filter((s) => s.finishReason !== 'tool-calls').length,
-                    totalToolCalls: steps.reduce((n, s) => n + s.toolCalls.length, 0),
-                    // 有没有任何一步产出过文本？这是"只调工具不产出文本"的直接证据
-                    stepsWithText: steps.filter((s) =>
-                        s.text.length > 0,
-                    ).length,
-                })
-                // ──────────────────────────────────────────────────────────
-                // 成本与工具步数观测（Day 1–2 建立的结构化日志在这里收口）
+                // 收集本次实际通过工具见到过的路径，供 onFinish 做引用交叉验证。
+                // 为什么在这里收：toolResults 里已经带了工具返回体，
+                // 而 readFile/grep 的返回体都有 path / matches[].path 字段。
+                for (const step of steps) {
+                    for (const tr of step.toolResults) {
+                        collectPaths(tr.output, toolCallPaths)
+                    }
+                }
+
+                const readFileCount = steps.reduce(
+                    (n, s) => n + s.toolCalls.filter((c) => c.toolName === 'readFile').length,
+                    0,
+                )
+                const stepsWithText = steps.filter((s) => s.text.length > 0).length
+
+                // 成本与工具步数观测（Day 1–2 建立的结构化日志在这里收口）。
+                // readFileCount 是 Day 13–14 的核心 KPI：
+                //   「完成一次代码分析要读几次文件」。基线（2026-10-06 实测）
+                //   = 1 次 listDir + 7 次 readFile = 14700 prompt tokens。
                 logEvent('info', 'chat.finish', {
                     requestId,
                     userId,
@@ -167,6 +157,11 @@ export const POST = withApiLogging({
                     completionTokens: usage.outputTokens,
                     steps: steps.length,
                     tools: steps.flatMap((s) => s.toolCalls.map((c) => c.toolName)),
+                    readFileCount,
+                    seenPathCount: toolCallPaths.size,
+                    // 一步文本都没产出 = 模型只调工具就结束了。
+                    // 这是"历史里出现空助手消息"的直接原因，值得单独看见。
+                    stepsWithText,
                 })
             },
         })
@@ -179,30 +174,42 @@ export const POST = withApiLogging({
             originalMessages: uiMessages,
             sendReasoning: false,
             onFinish: async ({ responseMessage, isAborted }) => {
-                // ── 诊断日志（定位"AI 消息丢失"）────────────────────────────
-                // 这条日志是整个排查的核心：它记录 onFinish **是否触发**、
-                // 抽出的文本长度、以及 parts 的真实结构。
-                // 判读方式：
-                //   没有这条日志            → onFinish 根本没跑（流中断/abort）→ 记录没落库
-                //   contentLength=0 且
-                //     partTypes 里只有 tool-* → 模型只调了工具、没产出文本
-                //     partTypes 含 text       → text part 存在但 text 字段不是 string
-                //     partTypes 为空/no-parts → parts 结构异常
-                logEvent('info', 'diag.chat.onFinish', {
-                    requestId,
-                    chatId: chatId ?? null,
-                    messageId: responseMessage.id,
-                    isAborted,
-                    contentLength: extractTextFromParts(responseMessage.parts).length,
-                    partTypes: responseMessage.parts?.map((p) => p.type).join(',') || 'no-parts',
-                    partCount: responseMessage.parts?.length ?? 0,
-                    // 只记"哪些 part 的 text 不是 string"，不记内容
-                    nonStringTextParts:
-                        responseMessage.parts
-                            ?.filter((p) => p.type === 'text' && typeof (p as { text?: unknown }).text !== 'string')
-                            .length ?? 0,
-                })
-                // ──────────────────────────────────────────────────────────
+                const text = extractTextFromParts(responseMessage.parts)
+
+                // 异常信号：落库路径触发了、但一个字的文本都没抽到。
+                // 只在真出问题时输出（正常情况下必然有文本），所以不会刷屏。
+                // 判读 partTypes：
+                //   只有 tool-*  → 模型只调了工具、没产出文本（改提示词，不是改代码）
+                //   含 text      → text part 存在但 text 字段不是 string（抽取逻辑有问题）
+                //   no-parts     → parts 结构异常（SDK 行为问题）
+                if (text.length === 0 && !isAborted) {
+                    logEvent('warn', 'chat.emptyAssistantContent', {
+                        requestId,
+                        chatId: chatId ?? null,
+                        messageId: responseMessage.id || null,
+                        partTypes: responseMessage.parts?.map((p) => p.type).join(',') || 'no-parts',
+                        nonStringTextParts:
+                            responseMessage.parts
+                                ?.filter((p) => p.type === 'text' && typeof (p as { text?: unknown }).text !== 'string')
+                                .length ?? 0,
+                    })
+                }
+
+                // 来源引用交叉验证（product-spec §7.3「禁止编造文件路径」）。
+                // 提示词只是**礼貌请求**，模型仍可能引用它从未读过的文件。
+                // 这里把它变成可检测的事实：抽取输出里的 file:line，
+                // 与本次工具真实返回过的路径比对，未命中的就是幻觉信号。
+                // 只打日志、不做拦截 —— 误报的代价（丢弃一段有用的回答）远高于漏报。
+                const unverified = unverifiedCitations(text, toolCallPaths)
+                if (unverified.length > 0) {
+                    logEvent('warn', 'chat.unverifiedCitations', {
+                        requestId,
+                        chatId: chatId ?? null,
+                        count: unverified.length,
+                        // 只记路径，不记引用周围的正文
+                        paths: unverified.map((c) => c.path).slice(0, 10),
+                    })
+                }
 
                 if (!chatId) return
                 try {

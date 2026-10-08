@@ -12,6 +12,7 @@ import {
   resolveWorkspaceFile,
   toToolErrorResult,
 } from '../security'
+import { stat } from 'node:fs/promises'
 
 /** 工具输入：不要用 .strict()（转 JSON Schema 会带 additionalProperties:false，部分 provider 拒绝） */
 export const ListDirInputSchema = z.object({
@@ -81,7 +82,8 @@ export async function listDir(input: ListDirInput): Promise<ListDirResult | Retu
             truncated = true
           }
         } else if (dirent.isFile()) {
-          entries.push({ path: rel, type: 'file' })
+          const info = await stat(path.join(currentAbs, dirent.name))
+          entries.push({ path: rel, type: 'file', size: info.size })
         }
         // 符号链接等其它类型直接跳过，不跟随（避免逃逸）
       }
