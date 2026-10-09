@@ -3,15 +3,14 @@
 // 读取工作区内某文件的指定行区间，供前端「点击 file:line → 在 Artifact 面板打开」使用。
 //
 // 为什么复用 readFileTool 而不是自己实现：
-//   ① 路径白名单、敏感文件屏蔽、200KB 上限、符号链接逃逸校验都在 security.ts 里，
-//      自己再写一遍必然漂移 —— 这是 Day 5–6 护栏最容易失效的方式。
-//   ② 复用之后，前端能看到的文件范围与 Agent 能看到的**完全一致**，
+//   路径白名单、敏感文件屏蔽、200KB 上限、符号链接逃逸校验都在 security.ts 里，
+//   复用之后，前端能看到的文件范围与 Agent 能看到的**完全一致**，
 //      不会出现"Agent 看不到但 UI 能看"的旁路。
 //
 // 与 Agent 工具的区别：这是**用户主动发起**的读取（点链接），不是模型决策，
 // 所以不需要 guard 的文件预算；但敏感文件屏蔽照旧生效（.env 依然 403）。
 import { requireUserId } from '@/lib/api/auth'
-import { withApiLogging } from '@/lib/api/observability'
+import { withApiLogging, getRequestId } from '@/lib/api/observability'
 import { readFileTool } from '@/lib/agent/tools/readFile'
 import { findFilesByBasename, getWorkspaceRoot } from '@/lib/agent/security'
 
@@ -23,7 +22,9 @@ const MAX_CANDIDATES = 10
 
 export const GET = withApiLogging({
   event: 'agent.file.GET',
-  handler: async (req: Request, requestId: string) => {
+  handler: async (req: Request) => {
+    // requestId 从 Request 上取，不靠位置参数（见 observability.ts 的说明）
+    const requestId = getRequestId(req)
     // 只要登录即可读——读取仍受 security.ts 的路径与敏感文件约束
     await requireUserId()
 

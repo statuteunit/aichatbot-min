@@ -1,12 +1,14 @@
 import { addMessages, getChatMessagesPage, upsertAssistantMessage } from '@/lib/repositories/chatRepository'
 import { requireUserId } from '@/lib/api/auth'
-import { withApiLogging } from '@/lib/api/observability'
+import { withApiLogging, getRequestId } from '@/lib/api/observability'
 import { AddMessagesSchema, PatchMessageSchema } from '@/lib/api/schemas'
 
 // 分页查询消息记录
 export const GET = withApiLogging({
   event: 'messages.GET',
-  handler: async (req: Request, { params }: { params: Promise<{ id: string }> }, requestId: string) => {
+  handler: async (req: Request, { params }: { params: Promise<{ id: string }> }) => {
+    // requestId 从 Request 上取，不靠位置参数（动态路由的 args 含 ctx）
+    const requestId = getRequestId(req)
     const userId = await requireUserId()
     const { id } = await params
 
@@ -37,7 +39,8 @@ export const GET = withApiLogging({
 // 它们现在被完全保留（含校验），不提前删除，以免在迁移未完成的窗口期回归。
 export const POST = withApiLogging({
   event: 'messages.POST',
-  handler: async (req: Request, { params }: { params: Promise<{ id: string }> }, requestId: string) => {
+  handler: async (req: Request, { params }: { params: Promise<{ id: string }> }) => {
+    const requestId = getRequestId(req)
     const userId = await requireUserId()
     const { id } = await params
 
@@ -54,7 +57,8 @@ export const POST = withApiLogging({
 
 export const PATCH = withApiLogging({
   event: 'messages.PATCH',
-  handler: async (req: Request, { params }: { params: Promise<{ id: string }> }, requestId: string) => {
+  handler: async (req: Request, { params }: { params: Promise<{ id: string }> }) => {
+    const requestId = getRequestId(req)
     const userId = await requireUserId()
     const { id } = await params
 

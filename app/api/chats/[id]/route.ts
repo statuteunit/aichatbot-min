@@ -5,13 +5,16 @@ import {
   updateChatMode,
 } from '@/lib/repositories/chatRepository'
 import { requireUserId } from '@/lib/api/auth'
-import { withApiLogging, logEvent } from '@/lib/api/observability'
+import { withApiLogging, logEvent, getRequestId } from '@/lib/api/observability'
 import { UpdateChatSchema } from '@/lib/api/schemas'
 
 // 查看某个历史对话
 export const GET = withApiLogging({
   event: 'chats.detail.GET',
-  handler: async (_req: Request, { params }: { params: Promise<{ id: string }> }, requestId: string) => {
+  handler: async (req: Request, { params }: { params: Promise<{ id: string }> }) => {
+    // requestId 从 Request 上取，不靠位置参数 —— 见 observability.ts 的说明。
+    // 动态路由的 args 含 ctx，位置参数式传参会让 handler 拿到 ctx 对象而不是 id。
+    const requestId = getRequestId(req)
     const userId = await requireUserId()
     const { id } = await params
     const data = await getChatWithMessages(id, userId)
@@ -24,7 +27,8 @@ export const GET = withApiLogging({
 // 不返回 403 是刻意的——403 会泄漏"这个 id 存在"的信息。
 export const DELETE = withApiLogging({
   event: 'chats.detail.DELETE',
-  handler: async (_req: Request, { params }: { params: Promise<{ id: string }> }, requestId: string) => {
+  handler: async (req: Request, { params }: { params: Promise<{ id: string }> }) => {
+    const requestId = getRequestId(req)
     const userId = await requireUserId()
     const { id } = await params
     const res = await deleteChat(id, userId)
@@ -35,7 +39,8 @@ export const DELETE = withApiLogging({
 // 更新对话标题与/或模式
 export const PATCH = withApiLogging({
   event: 'chats.detail.PATCH',
-  handler: async (req: Request, { params }: { params: Promise<{ id: string }> }, requestId: string) => {
+  handler: async (req: Request, { params }: { params: Promise<{ id: string }> }) => {
+    const requestId = getRequestId(req)
     const userId = await requireUserId()
     const { id } = await params
 

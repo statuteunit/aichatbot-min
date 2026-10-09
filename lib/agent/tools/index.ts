@@ -12,6 +12,7 @@
 import 'server-only'
 import { tool } from 'ai'
 import { createCallGuard, type CallGuard, type CallRejection } from '../guard'
+import { recordToolCall, summarizeOutput } from '../trace'
 import { ListDirInputSchema, listDir } from './listDir'
 import { ReadFileInputSchema, readFileTool } from './readFile'
 import { GrepInputSchema, grepTool } from './grep'
@@ -82,6 +83,7 @@ function guardTool<T extends { execute?: (...args: never[]) => unknown }>(
   name: string,
   base: T,
   guard: CallGuard,
+  traceId: string,
 ): T {
   const baseExecute = base.execute
   if (typeof baseExecute !== 'function') return base
@@ -91,6 +93,20 @@ function guardTool<T extends { execute?: (...args: never[]) => unknown }>(
     execute: async (input: unknown, ...rest: unknown[]) => {
       const rejection: CallRejection | null = guard.check(name, input)
       if (rejection) {
+        // 被 guard 拦截也算一次"工具调用事件"，值得留痕：
+        // 否则审计轨迹里会缺少"模型尝试了什么但被拒"这一段。
+        recordToolCall({
+          traceId,
+          runId: traceId,
+          toolName: name,
+          input,
+          ok: false,
+          code: rejection.code,
+          durationMs: 0,
+          outputBytes: 0,
+          outputHash: '',
+          outputPreview: rejection.hint,
+        })
         return {
           ok: false,
           code: rejection.code,
@@ -98,7 +114,12 @@ function guardTool<T extends { execute?: (...args: never[]) => unknown }>(
           hint: rejection.hint,
         }
       }
+
+      // ⚠️ 计时与追踪必须在 execute 回调**内部**：
+      // input / rest 只在这个作用域里存在。放到函数体顶层会引用到不存在的变量
+      const startedAt = Date.now()
       const result = await (baseExecute as (i: unknown, ...r: unknown[]) => unknown)(input, ...rest)
+      const durationMs = Date.now() - startedAt
 
       // 执行完成后回报实际输出体积，供字节预算累计。
       // 用 JSON 长度近似即可 —— 不需要精确到 token，
@@ -108,6 +129,20 @@ function guardTool<T extends { execute?: (...args: never[]) => unknown }>(
       } catch {
         // 结果不可序列化（理论上不会）时忽略，绝不能因此让工具调用失败
       }
+
+      // 追踪是旁路：recordToolCall 自己兜住异常，失败也不影响工具返回。
+      const summary = summarizeOutput(result)
+      recordToolCall({
+        traceId,
+        runId: traceId,
+        toolName: name,
+        input,
+        // 工具的返回体统一是 { ok: boolean }，没有 ok 字段时视为成功
+        ok: (result as { ok?: boolean } | null)?.ok ?? true,
+        code: (result as { code?: string } | null)?.code,
+        durationMs,
+        ...summary,
+      })
 
       return result
     },
@@ -119,21 +154,25 @@ function guardTool<T extends { execute?: (...args: never[]) => unknown }>(
  *
  * 注意：app/api/chat 必须用这个，不要用下面的 agentTools ——
  * guard 的计数是"单次分析"语义，共享一份会把不同用户的预算混在一起。
+ *
+ * @param traceId 追踪 id。**传入 requestId**（或 traceFields(requestId).traceId）
+ *                即可让请求日志与每一次工具调用带同一个 traceId，从而按 trace 回放。
+ *                省略时退化为 'no-trace'（仅测试/探针场景）。
  */
-export function createAgentTools(guard: CallGuard) {
+export function createAgentTools(guard: CallGuard, traceId = 'no-trace') {
   return {
-    listDir: guardTool('listDir', baseTools.listDir, guard),
-    readFile: guardTool('readFile', baseTools.readFile, guard),
-    grep: guardTool('grep', baseTools.grep, guard),
-    gitLog: guardTool('gitLog', baseTools.gitLog, guard),
-    gitDiff: guardTool('gitDiff', baseTools.gitDiff, guard),
-    readSensitiveFile: guardTool('readSensitiveFile', baseTools.readSensitiveFile, guard),
+    listDir: guardTool('listDir', baseTools.listDir, guard, traceId),
+    readFile: guardTool('readFile', baseTools.readFile, guard, traceId),
+    grep: guardTool('grep', baseTools.grep, guard, traceId),
+    gitLog: guardTool('gitLog', baseTools.gitLog, guard, traceId),
+    gitDiff: guardTool('gitDiff', baseTools.gitDiff, guard, traceId),
+    readSensitiveFile: guardTool('readSensitiveFile', baseTools.readSensitiveFile, guard, traceId),
   }
 }
 
 /** 便捷入口：每请求一个新的 guard */
-export function createGuardedAgentTools() {
-  return createAgentTools(createCallGuard())
+export function createGuardedAgentTools(traceId = 'no-trace') {
+  return createAgentTools(createCallGuard(), traceId)
 }
 
 /**

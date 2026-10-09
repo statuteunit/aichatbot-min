@@ -3,7 +3,7 @@ import { streamText, convertToModelMessages, stepCountIs, type UIMessage } from 
 import { createOpenAI } from '@ai-sdk/openai'
 import { z } from 'zod'
 import { requireUserId } from '@/lib/api/auth'
-import { withApiLogging, logEvent } from '@/lib/api/observability'
+import { withApiLogging, logEvent, traceFields, getRequestId } from '@/lib/api/observability'
 import { createGuardedAgentTools } from '@/lib/agent/tools'
 import { isChatMode, type ChatMode } from '@/lib/agent/prompt'
 import { collectPaths, unverifiedCitations } from '@/lib/agent/citations'
@@ -171,7 +171,11 @@ function flattenForLength(messages: UIMessage[]): number {
 
 export const POST = withApiLogging({
     event: 'chat.POST',
-    handler: async (req: Request, requestId: string) => {
+    handler: async (req: Request) => {
+        // requestId 从 Request 上取，不靠位置参数。
+        // 原写法 `async (req, requestId)` 在 args 含 ctx 时会拿到 ctx 对象，
+        // 症状是日志里 requestId 变成 {} —— 改用载体后与 args 形状解耦。
+        const requestId = getRequestId(req)
         const userId = await requireUserId()
 
         const parsed = ChatRequestSchema.safeParse(await req.json().catch(() => null))
@@ -236,8 +240,7 @@ export const POST = withApiLogging({
 
         // 每请求一个新的工具集（含 guard）。
         // 不能复用模块级常量：guard 的计数是"单次分析"语义，共享会把不同用户的预算混在一起。
-        const tools = createGuardedAgentTools()
-
+        const tools = createGuardedAgentTools(requestId)
         // 本次会话中工具真实返回过的路径，用于 onFinish 做引用交叉验证。
         // 注意作用域：必须在 streamText 之外声明，因为 onFinish 回调里要用它。
         const toolCallPaths = new Set<string>()
@@ -277,7 +280,12 @@ export const POST = withApiLogging({
                 //   「完成一次代码分析要读几次文件」。基线（2026-10-06 实测）
                 //   = 1 次 listDir + 7 次 readFile = 14700 prompt tokens。
                 logEvent('info', 'chat.finish', {
-                    requestId,
+                    // traceId 与 requestId 同值。**两个都记**是刻意的：
+                    //   - traceId 是验收与回放的检索键（与 agent.toolCall 同名同值）
+                    //   - requestId 供只按请求维度排查的场景使用
+                    // 若只记一个，验收脚本就得知道"工具日志用哪个字段名"，
+                    // 那是把日志实现细节泄漏给验收方。
+                    ...traceFields(requestId),
                     userId,
                     model,
                     mode,
