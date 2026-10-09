@@ -151,6 +151,32 @@ export async function resolveWorkspaceFile(
   if (segments.length > 0 && isSensitivePath(segments.join('/'))) {
     throw new ToolError('SENSITIVE_FILE_DENIED', `拒绝访问敏感文件：${requestedPath}`)
   }
+  // 忽略目录：显式路径也不许进入。
+  //
+  // 为什么必须有这条：IGNORED_DIRS 原先只作用于**遍历**（listDir / grep /
+  // findFilesByBasename 的 walk），而本函数不检查它 —— 于是依赖目录、构建产物
+  // 与版本库元数据都能通过显式路径绕过忽略规则：
+  //     readFile({ path: 'node_modules/next/package.json' })   // 读到了
+  //     listDir({ path: 'node_modules' })                      // 列出来了
+  //     grep({ pattern: 'x', path: 'node_modules/...' })       // 直接扫了它
+  // 「遍历跳过、显式可读」等于护栏可绕过，而可绕过的护栏在安全上等于没有。
+  //
+  // 错误码选择：统一用 SENSITIVE_FILE_DENIED，与 .env / *.pem 的拒绝语义保持一致。
+  //
+  // 为什么用「前缀匹配」而不是 segments.includes()：
+  //   本检查要覆盖的是**该目录及其下所有内容**（node_modules/**），
+  //   而 segments 里只有逐段的名字，user 传 'node_modules/x/y' 时
+  //   segments 是 ['node_modules','x','y']，用 includes 只能撞到首段之外的情况。
+  //   前缀匹配同时覆盖「就是该目录本身」与「在该目录之下」。
+  const normalizedRel = segments.join('/')
+  for (const ignored of IGNORED_DIRS) {
+    if (normalizedRel === ignored || normalizedRel.startsWith(`${ignored}/`)) {
+      throw new ToolError(
+        'SENSITIVE_FILE_DENIED',
+        `目录 ${ignored}/ 不在分析范围内（依赖、构建产物或版本库元数据）：${requestedPath}`,
+      )
+    }
+  }
 
   // workspaceRoot 本身也要 realpath：它可能是符号链接（或大小写不一致的 Windows 路径）
   const root = await realpathWorkspaceRoot(workspaceRoot)

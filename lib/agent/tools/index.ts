@@ -19,36 +19,6 @@ import { GitLogInputSchema, gitLog } from './gitLog'
 import { GitDiffInputSchema, gitDiff } from './gitDiff'
 import { readSensitiveFileTool } from './readSensitiveFile'
 
-/**
- * P0 读取 = 自动执行；P1 提案 = 自动执行但不写盘；P2 编辑 / P3 验证 = 必须人工批准
- */
-export type ToolPermission = 'P0' | 'P1' | 'P2' | 'P3'
-
-export interface ToolMeta {
-  name: string
-  permission: ToolPermission
-  /** 是否需要人工审批（P2/P3 为 true） */
-  needsApproval: boolean
-  /** 单次调用的输出上限说明，落审计用 */
-  outputLimit: string
-  /** 超时（毫秒） */
-  timeoutMs: number
-}
-
-/** 注册表元数据 */
-export const toolRegistry: ToolMeta[] = [
-  { name: 'listDir', permission: 'P0', needsApproval: false, outputLimit: '500 entries', timeoutMs: 10_000 },
-  { name: 'readFile', permission: 'P0', needsApproval: false, outputLimit: '200KB / 单文件', timeoutMs: 10_000 },
-  { name: 'grep', permission: 'P0', needsApproval: false, outputLimit: '200 matches', timeoutMs: 30_000 },
-  // git 类：只读子命令；超时给得比文件工具宽，因为大仓库的 log/diff 更慢
-  { name: 'gitLog', permission: 'P0', needsApproval: false, outputLimit: '50 commits / 200KB', timeoutMs: 15_000 },
-  { name: 'gitDiff', permission: 'P0', needsApproval: false, outputLimit: '200KB diff', timeoutMs: 30_000 },
-  // 唯一需要审批的工具（P2 语义）。它属于"演练"用途：把审批链路跑通，
-  // 同时验证「拒绝时模型能收到 reason 并调整策略」。
-  // 它不返回值，只返回键名/行数/字节数，所以没有扩大实际的信息暴露面。
-  { name: 'readSensitiveFile', permission: 'P2', needsApproval: true, outputLimit: '50 keys / 200KB', timeoutMs: 10_000 },
-]
-
 /*
  * 基础工具定义（不带 guard）。
  *
@@ -56,7 +26,7 @@ export const toolRegistry: ToolMeta[] = [
  * z.object 转 JSON Schema 本来就带 additionalProperties:false，部分 provider 会拒绝。
  * 输入校验由 AI SDK 在 execute 之前完成。
  */
-const baseTools = {
+export const baseTools = {
   listDir: tool({
     description:
       '列出工作区目录结构。用于先建立代码地图。会忽略 node_modules/.next/.git 等目录。',
