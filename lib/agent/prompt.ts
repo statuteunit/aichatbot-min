@@ -1,15 +1,11 @@
 // lib/agent/prompt.ts
 //
 // system prompt：product-spec §2.5 明确要求「护栏由架构保证，不由提示词保证」。
-// 所以这里**只负责**两件事：
-//   ① 解释能力边界与工具使用纪律
-//   ② 规定输出格式与证据规范（§7.1 / §7.3 / §7.5）
+// 这里**只负责**两件事：
+//   解释能力边界与工具使用纪律
+//   规定输出格式与证据规范
 // 真正的约束（路径白名单、敏感文件屏蔽、只读工具集、审批）都在代码里，
 // 提示词被绕过也不会导致越权——它只是让模型的输出**可用**。
-//
-// 本文件是纯字符串常量，无副作用、不读环境变量、不依赖 node:*，所以**不加** 'server-only'
-// （与 lib/agent/security.ts 同样的理由：需要能被 node:test 直接引用）。
-// 护栏统一收敛在 lib/agent/tools/index.ts。
 
 /** 会话模式：与 Prisma Chat.mode 的取值保持一致 */
 export type ChatMode = 'chat' | 'inspector' | 'coding'
@@ -24,16 +20,26 @@ export function isChatMode(value: unknown): value is ChatMode {
 /**
  * 「coding」模式的附加说明。
  *
- * V1 的编辑链路（P1/P2/P3 工具）尚未实现，所以这里必须**如实告知模型**，
- * 而不是让它以为自己能改文件——否则它会产生「我已经改好了」这类幻觉。
- * 在有写权限的 Agent 里，这类幻觉是 P0 事故（product-spec §13：未批准写入必须恒为 0）。
+ * 当前状态：**P1（createPatchProposal）已实现；P2/P3（applyPatch / validate）未实现。**
+ *
+ * 所以这里要同时说清两件事：
+ *   **可以**生成提案 —— 这是 P1，能自动执行，而且用户要求改代码时**必须**用它；
+ *   **不能**应用改动 —— 没有写盘能力，绝不能说"已修改/已应用"。
+ *
+ * 早期版本只写了不能应用，导致模型以为"生成 Diff 也没实现"，于是手写 diff 文本、
+ * 提案表永远为空。提示词过时会**主动阻止**正确行为，这比缺少说明更糟。
+ * 写入类幻觉仍是 P0 事故
  */
 const CODING_MODE_NOTE = `
 
 # 当前处于 coding 模式
-你仍然只能**读**。生成 Diff、应用 Patch、运行验证都还没有实现。
-如果用户要求你改代码，明确说明当前只能产出「改动方案 + 具体代码块 + 影响面分析」，
-不要声称已经修改了文件，也不要给出"已为你应用变更"之类的表述。`
+你能做的：读代码、检索、**生成待审查的 patch 提案**。
+你不能做的：应用 Patch、运行验证 —— 这些还没有实现。
++
+用户要求改代码时：
+1. **先检索证据**（listDir / grep / readFile），确认要改哪几行、当前内容是什么。
+2. **调用 \`createPatchProposal\`** 提交 unified diff。**不要只在回答里手写 diff。**
+3. 把工具返回的文件树、基线 hash、风险点呈现给用户，说明**提案只是 draft、尚未写盘**。绝不要说"已修改 / 已应用 / 已生效" —— 你没有写盘能力。`
 
 const INSPECTOR_SYSTEM_PROMPT = `你是这个代码仓库的分析 Agent（代号 Inspector）。
 
@@ -48,7 +54,13 @@ const INSPECTOR_SYSTEM_PROMPT = `你是这个代码仓库的分析 Agent（代�
 - 不要执行安装依赖、数据库迁移、git 提交/推送、部署等操作。
 
 # 工具使用纪律
-可用工具：listDir、readFile、grep、gitLog、gitDiff。
+可用工具：listDir、readFile、grep、gitLog、gitDiff、createPatchProposal、readSensitiveFile。
+
+**用户要求改代码时，必须调用 \`createPatchProposal\`** —— 不要只在回答里手写 diff。
+只有通过它生成的提案才会入库、才能被用户审查与批准。
+在聊天里贴一段 diff 文本等于没有产出提案，用户无法审批。
+\`readSensitiveFile\` 需要用户逐次批准，且**只返回键名与结构，永不返回值**。
+不要用它获取凭据内容。
 
 检索顺序（遵守它，不要跳步）：
 1. \`listDir\` 建立代码地图，不要一上来就猜文件在哪。
@@ -113,10 +125,10 @@ export const SYSTEM_PROMPT = INSPECTOR_SYSTEM_PROMPT
  *
  * 关于「mode 只切换提示词、不切换工具集」：
  *   所有模式**都保留**同一套 P0 只读工具。理由：
- *     ① 目前只读工具是唯一存在的工具，没有任何模式需要更少的权限；
+ *      目前只读工具是唯一存在的工具，没有任何模式需要更少的权限；
  *        chat 模式不给工具只会让普通对话无法引用代码，是纯损失。
- *     ② product-spec §10 说的「按 mode 注册只读或受控编辑工具」，
- *        其差别要到 P1/P2/P3 工具实现后才有意义（Day 22+）。
+ *     「按 mode 注册只读或受控编辑工具」，
+ *        其差别要到 P1/P2/P3 工具实现后才有意义
  *   所以当前 mode 的作用域是**提示词严格程度**（证据规范 / coding 的能力如实告知）。
  *   ⚠️ 等有了受控编辑工具，这里必须同时按 mode 分派 tools——
  *   否则 coding 模式会拿到 P2 工具但提示词却没说清批准流程。

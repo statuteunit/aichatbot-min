@@ -104,6 +104,8 @@ function describeInput(input: unknown): { inputBytes: number; inputKeys: string 
  *
  * ⚠️ 同步且**永不抛错**：追踪是旁路，绝不能因为它失败而让工具调用失败。
  */
+// 只在显式开启时记预览（默认关闭，保持日志不泄密）
+const LOG_OUTPUT_PREVIEW = process.env.AGENT_LOG_OUTPUT_PREVIEW === '1'
 export function recordToolCall(trace: ToolCallTrace): void {
   try {
     const { inputBytes, inputKeys } = describeInput(trace.input)
@@ -124,6 +126,7 @@ export function recordToolCall(trace: ToolCallTrace): void {
       outputBytes: trace.outputBytes,
       // 记 hash 而不是内容：既能核对"同输入是否同输出"，又不泄露内容
       outputHash: trace.outputHash,
+      ...(LOG_OUTPUT_PREVIEW ? { outputPreview: trace.outputPreview } : {}),
     })
   } catch {
     // 追踪失败必须静默 —— 它是旁路

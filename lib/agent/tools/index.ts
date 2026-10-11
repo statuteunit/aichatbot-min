@@ -19,6 +19,10 @@ import { GrepInputSchema, grepTool } from './grep'
 import { GitLogInputSchema, gitLog } from './gitLog'
 import { GitDiffInputSchema, gitDiff } from './gitDiff'
 import { readSensitiveFileTool } from './readSensitiveFile'
+import {
+  createPatchProposalTool,
+  setCurrentRunId,
+} from './patchProposal'
 
 /*
  * 基础工具定义（不带 guard）。
@@ -64,7 +68,7 @@ export const baseTools = {
     inputSchema: GitDiffInputSchema,
     execute: async (input) => gitDiff(input),
   }),
-
+  createPatchProposal: createPatchProposalTool,
   // 直接复用 readSensitiveFile.ts 里的定义：
   // 它自带 needsApproval: true，不需要在这里重复声明。
   readSensitiveFile: readSensitiveFileTool,
@@ -75,15 +79,16 @@ export const baseTools = {
  *
  * 拦截时不抛异常，而是返回与其它工具同形的 `{ ok: false, code, message }`
  * 并附带行动指引：
- *   ① 抛出异常在 SDK 侧会被记成工具执行失败，模型分不清"被限制"与"出故障"；
- *   ② 现有所有工具都返回 ok/code 结构，模型已经会读它；
- *   ③ 必须给 hint，否则模型大概率会重试同一个调用。
+ *   抛出异常在 SDK 侧会被记成工具执行失败，模型分不清"被限制"与"出故障"；
+ *   现有所有工具都返回 ok/code 结构，模型已经会读它；
+ *   必须给 hint，否则模型大概率会重试同一个调用。
  */
 function guardTool<T extends { execute?: (...args: never[]) => unknown }>(
   name: string,
   base: T,
   guard: CallGuard,
   traceId: string,
+  runId: string,
 ): T {
   const baseExecute = base.execute
   if (typeof baseExecute !== 'function') return base
@@ -97,7 +102,7 @@ function guardTool<T extends { execute?: (...args: never[]) => unknown }>(
         // 否则审计轨迹里会缺少"模型尝试了什么但被拒"这一段。
         recordToolCall({
           traceId,
-          runId: traceId,
+          runId,
           toolName: name,
           input,
           ok: false,
@@ -134,7 +139,7 @@ function guardTool<T extends { execute?: (...args: never[]) => unknown }>(
       const summary = summarizeOutput(result)
       recordToolCall({
         traceId,
-        runId: traceId,
+        runId,
         toolName: name,
         input,
         // 工具的返回体统一是 { ok: boolean }，没有 ok 字段时视为成功
@@ -155,24 +160,36 @@ function guardTool<T extends { execute?: (...args: never[]) => unknown }>(
  * 注意：app/api/chat 必须用这个，不要用下面的 agentTools ——
  * guard 的计数是"单次分析"语义，共享一份会把不同用户的预算混在一起。
  *
- * @param traceId 追踪 id。**传入 requestId**（或 traceFields(requestId).traceId）
- *                即可让请求日志与每一次工具调用带同一个 traceId，从而按 trace 回放。
- *                省略时退化为 'no-trace'（仅测试/探针场景）。
+ * @param traceId 日志串联用。**传 requestId**，保证 agent.toolCall 与
+ *                chat.POST / chat.finish 落在同一条 trace 上（scripts/trace.mts --verify 依赖它）。
+ * @param runId   提案归属用。**传 AgentRun.id**，createPatchProposal 落库时
+ *                用它的值填 PatchProposal.runId 外键。
+ *
+ * ⚠️ 两者**必须分开传**。曾经用同一个参数兼任两职，后果是：
+ *    agent.toolCall.traceId 变成了 runId，而 chat.POST.traceId 是 requestId，
+ *    两者不再相等 → trace 串联断裂，验收项"traceId 与 requestId 一致"失败。
  */
-export function createAgentTools(guard: CallGuard, traceId = 'no-trace') {
+export function createAgentTools(guard: CallGuard, traceId = 'no-trace', runId = 'no-run') {
+  // patchProposal 工具通过模块作用域读 runId（AI SDK 的 tool() 是模块级对象，
+  // execute 拿不到额外上下文），所以每请求设置一次。
+  setCurrentRunId(runId)
   return {
-    listDir: guardTool('listDir', baseTools.listDir, guard, traceId),
-    readFile: guardTool('readFile', baseTools.readFile, guard, traceId),
-    grep: guardTool('grep', baseTools.grep, guard, traceId),
-    gitLog: guardTool('gitLog', baseTools.gitLog, guard, traceId),
-    gitDiff: guardTool('gitDiff', baseTools.gitDiff, guard, traceId),
-    readSensitiveFile: guardTool('readSensitiveFile', baseTools.readSensitiveFile, guard, traceId),
+    listDir: guardTool('listDir', baseTools.listDir, guard, traceId, runId),
+    readFile: guardTool('readFile', baseTools.readFile, guard, traceId, runId),
+    grep: guardTool('grep', baseTools.grep, guard, traceId, runId),
+    gitLog: guardTool('gitLog', baseTools.gitLog, guard, traceId, runId),
+    gitDiff: guardTool('gitDiff', baseTools.gitDiff, guard, traceId, runId),
+    readSensitiveFile: guardTool('readSensitiveFile', baseTools.readSensitiveFile, guard, traceId, runId),
+    createPatchProposal: guardTool('createPatchProposal', baseTools.createPatchProposal, guard, traceId, runId),
   }
 }
 
-/** 便捷入口：每请求一个新的 guard */
-export function createGuardedAgentTools(traceId = 'no-trace') {
-  return createAgentTools(createCallGuard(), traceId)
+/**
+ * 便捷入口：每请求一个新的 guard。
+ * 参数语义同 createAgentTools —— traceId 与 runId 是两件事，不要合并。
+ */
+export function createGuardedAgentTools(traceId = 'no-trace', runId = 'no-run') {
+  return createAgentTools(createCallGuard(), traceId, runId)
 }
 
 /**

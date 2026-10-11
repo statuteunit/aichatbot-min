@@ -64,20 +64,21 @@ model VerificationToken {
 }
 
 model Chat {
-  id               String    @id @default(uuid())
+  id               String     @id @default(uuid())
   title            String
   model            String
-  mode             String    @default("chat") //chat|inspector|coding
+  mode             String     @default("chat") //chat|inspector|coding
   userId           String
-  user             User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  user             User?      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
   messages         Message[]
   /// 滚动摘要：对「已摘要位置之前」的历史的压缩描述
   summary          String?
   /// 摘要覆盖到最后哪一条消息。用它做边界，避免重复摘要
   summaryUpToMsgId String?
   summaryUpdatedAt DateTime?
+  agentRuns        AgentRun[] ///ai 编辑
 
   @@index([userId])
   @@index([updatedAt])
@@ -90,12 +91,84 @@ enum Role {
 }
 
 model Message {
-  id        String   @id @default(uuid())
-  chatId    String
-  chat      Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
-  role      Role
-  content   String
-  createdAt DateTime @default(now())
+  id              String           @id @default(uuid())
+  chatId          String
+  chat            Chat             @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  role            Role
+  content         String
+  createdAt       DateTime         @default(now())
+  toolCallRecords ToolCallRecord[] ///ai 调用记录，用于调试和回放
 
   @@index([chatId, createdAt])
+}
+
+model AgentRun {
+  id          String   @id @default(uuid())
+  chatId      String
+  userId      String
+  /// 提案面向的工作区标识。Day 22–23 是只读分析阶段，取仓库根标识
+  workspaceId String
+  /// planning | inspecting | awaiting_approval | applying | validating | done | failed | cancelled
+  status      String
+  traceId     String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  chat      Chat             @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  proposals PatchProposal[]
+  toolCalls ToolCallRecord[]
+
+  @@index([chatId, createdAt])
+  @@index([userId, createdAt])
+}
+
+/// 提案在批准前仅保存 Diff；基线 hash 让过期或冲突的提案无法被应用。
+model PatchProposal {
+  id             String    @id @default(uuid())
+  runId          String
+  /// 提案创建时的工作区标识；应用前必须一致（product-spec §14 Q1/Q6）
+  workspaceId    String
+  /// unified diff 全文。**这是不可信输入**，写库前必须经过 lib/agent/diff.ts 校验
+  diff           String
+  /// diff 内容的 sha256。审批绑定它，防止批准后被替换
+  diffHash       String
+  /// 一句话说明这次改动做什么
+  summary        String
+  /// 每个受影响文件的基线 hash：{ "路径": "sha256" }；新增文件用空文件 hash
+  baseFileHashes Json
+  /// draft | approved | rejected | stale | applied | failed | reverted
+  status         String    @default("draft")
+  /// 提案过期时间（product-spec §11：默认 30 分钟）
+  expiresAt      DateTime
+  approvedBy     String?
+  approvedAt     DateTime?
+  appliedAt      DateTime?
+  createdAt      DateTime  @default(now())
+
+  run AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId, status])
+  @@index([status, expiresAt])
+}
+
+/// 所有工具均留痕；写入与验证必须关联 run（product-spec §3.3）
+model ToolCallRecord {
+  id         String   @id @default(uuid())
+  runId      String
+  messageId  String?
+  toolName   String
+  input      Json
+  /// 输出摘要（不是原文 —— 隐私纪律见 lib/agent/trace.ts）
+  output     String?
+  /// ok | awaiting_approval | denied | error
+  status     String
+  approvalId String?
+  durationMs Int?
+  createdAt  DateTime @default(now())
+
+  run     AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  message Message? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  @@index([runId, createdAt])
+  @@index([messageId])
 }

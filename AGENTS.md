@@ -130,6 +130,8 @@ AUTH_GITHUB_SECRET=your-github-oauth-client-secret
 - 当前自研 `useChat` hook 和流式处理 ✅
 - 当前使用 Prisma + PostgreSQL 持久化 ✅
 - 当前使用 NextAuth v5 + GitHub OAuth 认证 ✅
+
+新增工具时，必须同步更新 lib/agent/prompt.ts 的「可用工具」列表与相关模式说明。 提示词是接口文档，它与代码不同步就会静默失效。
 <!-- END:goal -->
 
 <!-- BEGIN:format -->

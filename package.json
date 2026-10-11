@@ -12,7 +12,8 @@
     "db:migrate": "node scripts/db.mjs migrate",
     "db:deploy": "node scripts/db.mjs deploy",
     "schema:analysis": "tsx scripts/print-analysis-schema.mjs",
-    "test": "tsx --test \"tests/**/*.test.ts\""
+    "test": "tsx --test \"tests/**/*.test.ts\"",
+    "prisma": "prisma studio"
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.114",

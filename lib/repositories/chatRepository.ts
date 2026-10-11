@@ -317,7 +317,7 @@ export async function updateChatTitle(id: string, title: string, userId: string)
 /**
  * 更新会话模式。
  *
- * 语义（product-spec §10 / §14 Q5）：mode 是**会话级设置**，
+ * 语义：mode 是**会话级设置**，
  * 它决定后续消息用哪套 system prompt。允许中途更改，
  * 但只有**之后**的消息受新模式影响 —— 已产生的历史消息不会被重写，
  * 它们记录了当时实际生效的模式。这一点必须在 UI 上如实告知用户，

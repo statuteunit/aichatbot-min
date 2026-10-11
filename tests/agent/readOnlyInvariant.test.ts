@@ -9,7 +9,7 @@ import {
 
 test('工具注册表里不存在任何写入能力', () => {
   assert.deepEqual([...TOOL_NAMES].sort(), [
-    'gitDiff', 'gitLog', 'grep', 'listDir', 'readFile', 'readSensitiveFile',
+    'createPatchProposal', 'gitDiff', 'gitLog', 'grep', 'listDir', 'readFile', 'readSensitiveFile',
   ])
 })
 
@@ -55,4 +55,23 @@ test('toolPolicy 声明的 git 超时与工具实现一致', () => {
       `${tool} 的超时不一致：toolPolicy 声明 ${declared[tool]}，实际 ${actual}。改一处必须改另一处`,
     )
   }
+})
+
+test('P1 工具可以自动执行，但绝不允许改写工作区', () => {
+  const p1 = toolRegistry.filter((t) => t.permission === 'P1')
+  for (const t of p1) {
+    assert.equal(t.needsApproval, false, `${t.name} 是 P1，不写盘就不该要求审批`)
+  }
+  // P1 的语义是"只读 + 只落提案"，所以它必须不出现在"需要审批"的工具集合里，
+  // 也不能是 P2/P3。这条断言把 README 权限表的定义变成可执行检查。
+  assert.ok(p1.length >= 1, '至少应有一个 P1 工具（createPatchProposal）')
+})
+
+test('没有任何工具具备 P2/P3 之外的写入能力', () => {
+  // V1 的写盘工具（applyApprovedPatch / runApprovedValidation）尚未实现。
+  // 这条断言会在它们落地时失败，提醒补审批与审计 —— 而不是让它们悄悄出现。
+  const hasWriteTool = toolRegistry.some((t) =>
+    ['applyApprovedPatch', 'runApprovedValidation', 'writeFile', 'deleteFile'].includes(t.name),
+  )
+  assert.equal(hasWriteTool, false, 'V1 尚未实现写盘工具；若确实要加，请连同审批与审计一起加')
 })

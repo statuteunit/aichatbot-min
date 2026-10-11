@@ -20,6 +20,8 @@ import {
     getSystemPromptWithSummary,
     summarizeHistory,
 } from '@/lib/agent/summary'
+import { createAgentRun } from '@/lib/repositories/proposalRepository'
+import { workspaceIdForCurrentCheckout } from '@/lib/agent/workspace'
 
 /**
  * 与 OpenRouter 的 OpenAI 兼容层对接。
@@ -238,9 +240,44 @@ export const POST = withApiLogging({
         // convertToModelMessages 是异步的（UIMessage.parts → ModelMessage[]），必须 await。
         const modelMessages = await convertToModelMessages(historyForModel)
 
+        // 创建 AgentRun：PatchProposal 需要 runId 外键，而 run 属于"本次分析"。
+        // 只在已落库的会话里创建 —— 新会话（chatId 为空）还没有 chat 行可关联。
+        // 失败不让请求失败：没有 run 只是不能生成提案，分析与回答仍然可用。
+        let agentRunId: string | null = null
+        if (chatId) {
+            try {
+                const run = await createAgentRun({
+                    chatId,
+                    userId,
+                    workspaceId: workspaceIdForCurrentCheckout(),
+                    traceId: requestId,
+                })
+                agentRunId = run.id
+                logEvent('info', 'agent.runCreated', {
+                    ...traceFields(requestId),
+                    chatId,
+                    runId: agentRunId,
+                })
+            } catch (err) {
+                logEvent('error', 'agent.runCreateFailed', {
+                    ...traceFields(requestId),
+                    chatId,
+                    error: err instanceof Error ? err.message : String(err),
+                })
+            }
+        }
         // 每请求一个新的工具集（含 guard）。
         // 不能复用模块级常量：guard 的计数是"单次分析"语义，共享会把不同用户的预算混在一起。
-        const tools = createGuardedAgentTools(requestId)
+        //
+        // traceId 与 runId **分开传**：
+        //   traceId 恒为 requestId → agent.toolCall 与 chat.POST/chat.finish 同一条 trace
+        //   runId   为真 AgentRun.id → PatchProposal.runId 外键指向它
+        // 曾用同一个参数兼任两职，导致 agent.toolCall.traceId 变成 runId、
+        // 与 chat.POST 的 traceId 不再相等，trace 串联断裂。
+        //
+        // 没有 agentRunId 时（新会话 / 建 run 失败）用 requestId 兜底，
+        // 保证 createPatchProposal 仍能工作 —— 只是提案会挂在一个非真 run 上。
+        const tools = createGuardedAgentTools(requestId, agentRunId ?? requestId)
         // 本次会话中工具真实返回过的路径，用于 onFinish 做引用交叉验证。
         // 注意作用域：必须在 streamText 之外声明，因为 onFinish 回调里要用它。
         const toolCallPaths = new Set<string>()
