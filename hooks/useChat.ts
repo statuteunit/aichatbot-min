@@ -15,7 +15,7 @@
 import { useEffect, useState } from 'react'
 import { DefaultChatTransport, type UIMessage } from 'ai'
 import { useChat as useAiChat } from '@ai-sdk/react'
-import type { MessageStatus } from '@/types/stream'
+import type { ApprovalResponse, MessageStatus } from '@/types/stream'
 import { logEvent } from '@/lib/logging'
 
 interface UseChatOptions {
@@ -48,7 +48,7 @@ interface UseChatReturn {
   /** 清空当前消息（切会话前调用） */
   reset: () => void
   /** 对 needsApproval 的工具做出批准/拒绝决定 */
-  respondToApproval: (params: { id: string; approved: boolean; reason?: string }) => void
+  respondToApproval: (params: ApprovalResponse) => Promise<void>
 }
 
 /** useChat 的 status → 展示六态的映射（tool / approval 由消息内容进一步细分） */
@@ -135,6 +135,13 @@ function createStableId(): string {
   }
   // 极端回退：没有 Web Crypto 的环境。仍然保证非空
   return `id_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`
+}
+
+// 工具调用前取出提案id
+function proposalIdOf(toolName: string | undefined, input: unknown): string | null {
+  if (toolName !== 'applyApprovedPatch') return null
+  const raw = (input as { proposalId?: unknown } | null)?.proposalId
+  return typeof raw === 'string' && raw.length > 0 ? raw : null
 }
 
 export function useChat(options: UseChatOptions = {}): UseChatReturn {
@@ -251,8 +258,49 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
     reset: () => {
       chat.setMessages([])
     },
-    respondToApproval: ({ id, approved, reason }) => {
-      // 写入决定。若 sendAutomaticallyWhen 返回 true，SDK 会自动把消息发回服务端续流。
+    respondToApproval: async ({ id, approved, reason, toolName, input }) => {
+      // 先完成"提案批准"这一层（只有 applyApprovedPatch 需要）。
+      // 顺序不可颠倒。
+      //    addToolApprovalResponse 会立刻触发 sendAutomaticallyWhen → 服务端执行工具；
+      //    而 lib/agent/apply.ts 要求 PatchProposal.status === 'approved'。
+      //    如果先回写工具审批，工具一定读到 draft 并返回 PROPOSAL_NOT_APPROVED
+      const proposalId = proposalIdOf(toolName, input)
+      if (proposalId && approved) {
+        let failure: string | null = null
+        try {
+          const res = await fetch(
+            `/api/agent/proposals/${encodeURIComponent(proposalId)}/approve`,
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ decision: 'approve' }),
+            },
+          )
+          if (!res.ok) {
+            const body = (await res.json().catch(() => null)) as
+              | { message?: string; error?: string }
+              | null
+            failure = body?.message ?? `提案批准被拒绝（HTTP ${res.status} ${body?.error ?? ''}）`.trim()
+          }
+        } catch (err) {
+          failure = `提案批准请求失败：${err instanceof Error ? err.message : String(err)}`
+        }
+
+        if (failure) {
+          // 批准没落库就绝不能放行工具。
+          // 把服务端的理由当作"拒绝"回给模型 —— 这样它知道该重新生成提案，
+          // 而不是重试同一个调用（工具返回 PROPOSAL_NOT_APPROVED 才是死循环的源头）。
+          logEvent('error', 'chat.approvalPersistFailed', { proposalId, error: failure })
+          void chat.addToolApprovalResponse({ id, approved: false, reason: failure })
+          return
+        }
+      }
+
+      // 再回答工具审批。sendAutomaticallyWhen 会据此自动续流，服务端这时才真正执行工具。
+      // 注意：拒绝工具调用时**故意不**把提案标成 rejected。
+      //   "这次不应用" 与 "这份提案作废" 是两件事：提案保持 draft，用户可以稍后再批准。
+      //   一旦标成 rejected，approveProposal 的 where(status:'draft') 就永远不匹配，
+      //   这份提案再也无法被批准。
       void chat.addToolApprovalResponse({ id, approved, reason })
     },
   }

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { prisma } from '@/lib/db'
 import { Role } from '@prisma/client'
 import { logEvent } from '@/lib/logging'
+import { retryTransient } from '@/lib/agent/dbRetry'
 const DEFAULT_CHAT_TITLE = '新对话'
 const CHAT_TITLE_MAX_LENGTH = 20
 
@@ -181,7 +182,15 @@ export async function addMessages(
     })
 
     return { updatedTitle }
-  })
+  },
+    {
+      // 默认 maxWait 2000 / timeout 5000 是给本地库设计的。
+      // 本库在 db.prisma.io，单次往返常见 1~3 秒，事务里有 4 次往返：
+      // 5 秒寿命已经被实测撞穿过（P2028, 6630ms）。这里给足余量。
+      maxWait: 10_000,
+      timeout: 15_000,
+    },
+  )
 }
 
 export async function upsertAssistantMessage(params: {
@@ -230,36 +239,53 @@ export async function upsertAssistantMessage(params: {
     return { content: '' }
   }
 
-  return prisma.$transaction(async (tx) => {
-    // 所有权校验：不属于该用户的会话一律拒绝
-    const chat = await tx.chat.findFirst({
-      where: { id: chatId, userId },
-      select: { id: true },
-    })
-    if (!chat) {
-      throw new Error('Chat not found')
-    }
+  const owned = await retryTransient(
+    () =>
+      prisma.chat.findFirst({
+        where: { id: chatId, userId },
+        select: { id: true },
+      }),
+    { label: 'chat.upsertAssistantMessage.verifyOwnership' },
+  )
+  if (!owned) {
+    throw new Error('Chat not found')
+  }
 
-    await tx.message.upsert({
-      // 用兜底后的 messageId，不能用 message.id ——
-      // 后者可能是空字符串，会让所有 AI 消息挤在同一个主键上互相覆盖
-      where: { id: messageId },
-      update: { content },
-      create: {
-        id: messageId,
-        chatId,
-        role: Role.assistant,
-        content,
-      },
-    })
+  await retryTransient(
+    () =>
+      prisma.message.upsert({
+        // 用兜底后的 messageId，不能用 message.id ——
+        // 后者可能是空字符串，会让所有 AI 消息挤在同一个主键上互相覆盖
+        where: { id: messageId },
+        update: { content },
+        create: {
+          id: messageId,
+          chatId,
+          role: Role.assistant,
+          content,
+        },
+      }),
+    { label: 'chat.upsertAssistantMessage.upsertMessage' },
+  )
 
-    await tx.chat.update({
-      where: { id: chatId },
-      data: { updatedAt: new Date() },
+  try {
+    await retryTransient(
+      () =>
+        prisma.chat.update({
+          where: { id: chatId },
+          data: { updatedAt: new Date() },
+        }),
+      { label: 'chat.upsertAssistantMessage.updateChat' },
+    )
+  } catch (err) {
+    // 消息已经落库，updatedAt 没刷新只是排序稍旧，绝不能让 onFinish 报错
+    logEvent('warn', 'chat.touchFailed', {
+      chatId,
+      error: err instanceof Error ? err.message : String(err),
     })
+  }
 
-    return { content }
-  })
+  return { content }
 }
 
 export async function saveUserMessage(params: {
@@ -270,35 +296,76 @@ export async function saveUserMessage(params: {
   const { chatId, userId, message } = params
   const content = extractTextFromParts(message.parts)
 
-  return prisma.$transaction(async (tx) => {
-    const chat = await tx.chat.findFirst({
-      where: { id: chatId, userId },
-      select: { id: true, title: true },
+  // ── 为什么这里**没有** $transaction ────────────────────────────────────
+  // 原先是一个交互式事务（findFirst → count → message.upsert → chat.update）。
+  // 它在 2026-10-12 的事故里超时了：
+  //   code P2028 / "timeout for this transaction was 5000 ms, however 6630 ms passed"
+  // 根因是「远程库 + 单个事务里 3~4 次串行往返」超过 Prisma 的 5000ms 默认寿命。
+  //
+  // 而这几步**本来就不需要原子性**：
+  //   · 归属校验是只读的；
+  //   · message.upsert 以 message.id 为主键，天然幂等；
+  //   · 标题用一个**条件** updateMany（where 里带上"标题仍是默认值"），
+  //     「只设置一次」由这个条件保证，而不是由事务保证。
+  // 去掉事务后：每次操作各自独立超时（默认 5s），不再有"整个事务合计 5s"这种
+  // 隐式预算，也不再有"事务被关掉后连第一句都执行不了"的连锁。
+
+  const chat = await retryTransient(
+    () =>
+      prisma.chat.findFirst({
+        where: { id: chatId, userId },
+        select: { id: true, title: true },
+      }),
+    { label: 'chat.saveUserMessage.verifyOwnership' },
+  )
+  if (!chat) {
+    throw new Error('Chat not found')
+  }
+
+  // upsert 保证重试/重复请求幂等（换流、双开标签页、网络重发都靠它）
+  await retryTransient(
+    () =>
+      prisma.message.upsert({
+        where: { id: message.id },
+        update: { content },
+        create: { id: message.id, chatId, role: Role.user, content },
+      }),
+    { label: 'chat.saveUserMessage.upsertMessage' },
+  )
+
+  // 标题：只有当它还是默认值时改写，且**把默认值写进 where** ——
+  // 两个并发请求里只有一个的 updateMany 会命中，另一个 count = 0 直接返回 null，
+  // 于是「首条用户消息生成标题」天然只发生一次，不需要事务也不是竞态。
+  const updatedTitle =
+    !chat.title.trim() || chat.title === DEFAULT_CHAT_TITLE
+      ? buildChatTitleFromMessage(content)
+      : null
+
+  try {
+    await retryTransient(
+      () =>
+        prisma.chat.update({
+          where: { id: chatId },
+          data: {
+            updatedAt: new Date(),
+            ...(updatedTitle
+              ? { title: updatedTitle, titleSource: 'auto' }
+              : {}),
+          },
+        }),
+      { label: 'chat.saveUserMessage.updateChat' },
+    )
+  } catch (err) {
+    // 消息已经写进去了。这里失败只影响「会话排序时间」和「标题」，
+    // 不该让整条消息落库被回滚（没有事务了，也不会回滚）——
+    // 所以只记日志、不抛。抛出去会让 route 把已经成功的落库当成失败。
+    logEvent('warn', 'chat.touchFailed', {
+      chatId,
+      error: err instanceof Error ? err.message : String(err),
     })
-    if (!chat) {
-      throw new Error('Chat not found')
-    }
+  }
 
-    const existingMessageCount = await tx.message.count({ where: { chatId } })
-    const updatedTitle = resolveChatTitle(chat.title, existingMessageCount, content)
-
-    // upsert 保证重试/重复请求幂等
-    await tx.message.upsert({
-      where: { id: message.id },
-      update: { content },
-      create: { id: message.id, chatId, role: Role.user, content },
-    })
-
-    await tx.chat.update({
-      where: { id: chatId },
-      data: {
-        updatedAt: new Date(),
-        ...(updatedTitle ? { title: updatedTitle } : {}),
-      },
-    })
-
-    return { updatedTitle }
-  })
+  return { updatedTitle }
 }
 
 export async function updateChatTitle(id: string, title: string, userId: string) {

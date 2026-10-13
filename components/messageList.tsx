@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import type { UIMessage } from 'ai';
 import { MessageItem } from '@/components/messageItem';
-import type { MessageStatus } from '@/types/stream';
+import type { MessageStatus, ApprovalResponse } from '@/types/stream';
 
 interface MessageListProps {
   messages: UIMessage[]
@@ -16,7 +16,7 @@ interface MessageListProps {
   /** 出错时的重试入口 */
   onReload?: () => void
   /** 对 needsApproval 的工具做批准/拒绝决定 */
-  onApprovalResponse?: (params: { id: string; approved: boolean; reason?: string }) => void
+  onApprovalResponse?: (params: ApprovalResponse) => void
 }
 
 /** 工具名 → 展示文案 */

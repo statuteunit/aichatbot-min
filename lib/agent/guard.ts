@@ -61,6 +61,8 @@ function stableStringify(value: unknown): string {
 
 /** 会被计入"读取文件预算"的工具 */
 const FILE_READING_TOOLS = new Set(['readFile'])
+// 副作用工具不计入去重
+const SIDE_EFFECT_TOOLS = new Set(['createPatchProposal', 'applyApprovedPatch'])
 
 /**
  * 会被计入**字节预算**的工具。
@@ -92,6 +94,9 @@ export function createCallGuard(options: GuardOptions = {}): CallGuard {
   return {
     check(toolName: string, input: unknown): CallRejection | null {
       totalCalls += 1
+      if (SIDE_EFFECT_TOOLS.has(toolName)) {
+        return null
+      }
       const key = `${toolName}:${stableStringify(input)}`
       const count = (seen.get(key) ?? 0) + 1
       seen.set(key, count)

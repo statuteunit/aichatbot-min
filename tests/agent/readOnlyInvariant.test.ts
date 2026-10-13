@@ -9,7 +9,14 @@ import {
 
 test('工具注册表里不存在任何写入能力', () => {
   assert.deepEqual([...TOOL_NAMES].sort(), [
-    'createPatchProposal', 'gitDiff', 'gitLog', 'grep', 'listDir', 'readFile', 'readSensitiveFile',
+    'applyApprovedPatch',   // ← 新增的 P2 写盘工具，需审批
+    'createPatchProposal',
+    'gitDiff',
+    'gitLog',
+    'grep',
+    'listDir',
+    'readFile',
+    'readSensitiveFile',
   ])
 })
 
@@ -67,11 +74,24 @@ test('P1 工具可以自动执行，但绝不允许改写工作区', () => {
   assert.ok(p1.length >= 1, '至少应有一个 P1 工具（createPatchProposal）')
 })
 
-test('没有任何工具具备 P2/P3 之外的写入能力', () => {
-  // V1 的写盘工具（applyApprovedPatch / runApprovedValidation）尚未实现。
-  // 这条断言会在它们落地时失败，提醒补审批与审计 —— 而不是让它们悄悄出现。
-  const hasWriteTool = toolRegistry.some((t) =>
-    ['applyApprovedPatch', 'runApprovedValidation', 'writeFile', 'deleteFile'].includes(t.name),
-  )
-  assert.equal(hasWriteTool, false, 'V1 尚未实现写盘工具；若确实要加，请连同审批与审计一起加')
+test('写盘工具只能以 P2 + 强制审批的形式存在', () => {
+  // 这条断言的前身是"V1 尚未实现写盘工具 → hasWriteTool 必须为 false"。
+  // 落地 applyApprovedPatch 后，它按设计报红了；现在把它翻转成：
+  // 写盘工具**可以存在**，但必须同时满足三个条件，缺一即失败。
+  const WRITE_TOOL_NAMES = ['applyApprovedPatch', 'runApprovedValidation', 'writeFile', 'deleteFile']
+  const writeTools = toolRegistry.filter((t) => WRITE_TOOL_NAMES.includes(t.name))
+
+  assert.ok(writeTools.length >= 1, 'Day 24–25 后应至少有一个写盘工具（applyApprovedPatch）')
+
+  for (const t of writeTools) {
+    assert.equal(t.permission, 'P2', `${t.name} 是写盘工具，权限必须是 P2（P1 的语义是只读）`)
+    assert.equal(t.needsApproval, true, `${t.name} 是写盘工具，必须 needsApproval: true`)
+  }
+
+  // 反向断言：P1 工具一个都不许出现在写盘名单里。
+  // 用 filter 而不是 some，是为了在失败信息里直接列出违规的工具名。
+  const p1WriteTools = toolRegistry
+    .filter((t) => t.permission === 'P1' && WRITE_TOOL_NAMES.includes(t.name))
+    .map((t) => t.name)
+  assert.deepEqual(p1WriteTools, [], `P1（只读）工具不允许具备写入能力：${p1WriteTools.join(', ')}`)
 })

@@ -22,6 +22,9 @@ import {
 } from '@/lib/agent/summary'
 import { createAgentRun } from '@/lib/repositories/proposalRepository'
 import { workspaceIdForCurrentCheckout } from '@/lib/agent/workspace'
+import { setAgentRequestContext } from '@/lib/agent/runContext'
+import { isRetryableDbError, retryTransient } from '@/lib/agent/dbRetry'
+import { updateAgentRunStatus } from '@/lib/repositories/proposalRepository'
 
 /**
  * 与 OpenRouter 的 OpenAI 兼容层对接。
@@ -209,19 +212,34 @@ export const POST = withApiLogging({
             // DB 里是 String，可能被写成非法值；非法则回落默认
             mode = isChatMode(chat.mode) ? chat.mode : 'inspector'
         }
-
         // 用户消息由服务端落库（助手消息由 onFinish 负责）。
         // 没有这一步，历史记录里会只剩助手的回答。
         // 顺带在这里处理「首条用户消息生成会话标题」。
+        //
+        // ⚠️ 落库失败**不能让整个请求失败**。
+        // 曾经这里不兜底，于是数据库一次瞬时超时（P2028）就把回答也一起否决了：
+        // 用户收到 {"error":"INTERNAL_ERROR"}，一个字都看不到，
+        // 而根因只是一次 6.6 秒的事务超时。回答的价值远高于这一行记录。
         const lastUserMessage = [...uiMessages].reverse().find((m) => m.role === 'user')
         if (chatId && lastUserMessage) {
-            const { updatedTitle } = await saveUserMessage({
-                chatId,
-                userId,
-                message: lastUserMessage,
-            })
-            if (updatedTitle) {
-                logEvent('info', 'chat.titleSet', { requestId, chatId, title: updatedTitle })
+            try {
+                const { updatedTitle } = await saveUserMessage({
+                    chatId,
+                    userId,
+                    message: lastUserMessage,
+                })
+                if (updatedTitle) {
+                    logEvent('info', 'chat.titleSet', { requestId, chatId, title: updatedTitle })
+                }
+            } catch (err) {
+                logEvent('warn', 'chat.userMessagePersistFailed', {
+                    requestId,
+                    chatId,
+                    messageId: lastUserMessage.id,
+                    retryable: isRetryableDbError(err),
+                    error: err instanceof Error ? err.message : String(err),
+                })
+                // 刻意不 return：继续走下面的 streamText
             }
         }
 
@@ -246,12 +264,15 @@ export const POST = withApiLogging({
         let agentRunId: string | null = null
         if (chatId) {
             try {
-                const run = await createAgentRun({
-                    chatId,
-                    userId,
-                    workspaceId: workspaceIdForCurrentCheckout(),
-                    traceId: requestId,
-                })
+                const run = await retryTransient(
+                    () => createAgentRun({
+                        chatId,
+                        userId,
+                        workspaceId: workspaceIdForCurrentCheckout(),
+                        traceId: requestId,
+                    }),
+                    { label: 'chat.createAgentRun' },
+                )
                 agentRunId = run.id
                 logEvent('info', 'agent.runCreated', {
                     ...traceFields(requestId),
@@ -275,9 +296,22 @@ export const POST = withApiLogging({
         // 曾用同一个参数兼任两职，导致 agent.toolCall.traceId 变成 runId、
         // 与 chat.POST 的 traceId 不再相等，trace 串联断裂。
         //
-        // 没有 agentRunId 时（新会话 / 建 run 失败）用 requestId 兜底，
-        // 保证 createPatchProposal 仍能工作 —— 只是提案会挂在一个非真 run 上。
-        const tools = createGuardedAgentTools(requestId, agentRunId ?? requestId)
+        // ⚠️ 不要用 `agentRunId ?? requestId` 兜底。
+        //    requestId 是日志用的 UUID，永远不是 AgentRun.id；
+        //    而 PatchProposal.runId 是**非空外键**，拿它去插会抛
+        //      Foreign key constraint violated: PatchProposal_runId_fkey
+        //    再被工具层的 catch 压成 INTERNAL_ERROR —— 模型读不懂，只能原样重发。
+        //    正确做法：没有真 run 时传空串，patchProposal.ts 会在需要时自己 ensureAgentRun。
+        // 没有 agentRunId 时不再用 requestId 冒充 runId（见下方注释）；
+        // 改为把 chatId 一起交给工具层，由 patchProposal 在真正需要时自建 run。
+        setAgentRequestContext({
+            traceId: requestId,
+            runId: agentRunId ?? '',
+            userId,
+            chatId: chatId ?? null,
+            messageId: null,
+        })
+        const tools = createGuardedAgentTools(requestId, agentRunId ?? '', userId)
         // 本次会话中工具真实返回过的路径，用于 onFinish 做引用交叉验证。
         // 注意作用域：必须在 streamText 之外声明，因为 onFinish 回调里要用它。
         const toolCallPaths = new Set<string>()
@@ -405,6 +439,16 @@ export const POST = withApiLogging({
                         isAborted,
                         contentLength: content.length,   // 只记长度，不记内容
                     })
+
+                    if (agentRunId) {
+                        void updateAgentRunStatus(agentRunId, 'done').catch((err) => {
+                            logEvent('warn', 'agent.runStatusFailed', {
+                                requestId,
+                                runId: agentRunId,
+                                error: err instanceof Error ? err.message : String(err),
+                            })
+                        })
+                    }
 
                     // 异步刷新摘要：**刻意不 await**。
                     //   摘要是后台优化，让用户为它多等一次模型调用不可接受；

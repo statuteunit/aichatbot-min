@@ -114,6 +114,8 @@ model AgentRun {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  baselineHash String?
+
   chat      Chat             @relation(fields: [chatId], references: [id], onDelete: Cascade)
   proposals PatchProposal[]
   toolCalls ToolCallRecord[]
@@ -124,29 +126,35 @@ model AgentRun {
 
 /// 提案在批准前仅保存 Diff；基线 hash 让过期或冲突的提案无法被应用。
 model PatchProposal {
-  id             String    @id @default(uuid())
-  runId          String
+  id               String    @id @default(uuid())
+  runId            String
   /// 提案创建时的工作区标识；应用前必须一致（product-spec §14 Q1/Q6）
-  workspaceId    String
+  workspaceId      String
   /// unified diff 全文。**这是不可信输入**，写库前必须经过 lib/agent/diff.ts 校验
-  diff           String
+  diff             String
   /// diff 内容的 sha256。审批绑定它，防止批准后被替换
-  diffHash       String
+  diffHash         String
+  /// 批准时刻的 diffHash。如果与 diffHash 不一致 → 说明批准后被替换，拒绝应用
+  approvedDiffHash String?
+  /// 每个受影响文件应用后的目标 hash：{ "路径": "sha256" }。
+  /// 幂等判定的依据：磁盘已是目标态 → 本次是重复批准，直接成功且不写盘
+  targetFileHashes Json?
   /// 一句话说明这次改动做什么
-  summary        String
+  summary          String
   /// 每个受影响文件的基线 hash：{ "路径": "sha256" }；新增文件用空文件 hash
-  baseFileHashes Json
+  baseFileHashes   Json
   /// draft | approved | rejected | stale | applied | failed | reverted
-  status         String    @default("draft")
+  status           String    @default("draft")
   /// 提案过期时间（product-spec §11：默认 30 分钟）
-  expiresAt      DateTime
-  approvedBy     String?
-  approvedAt     DateTime?
-  appliedAt      DateTime?
-  createdAt      DateTime  @default(now())
+  expiresAt        DateTime
+  approvedBy       String?
+  approvedAt       DateTime?
+  appliedAt        DateTime?
+  createdAt        DateTime  @default(now())
 
   run AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 
+  @@index([id, status])
   @@index([runId, status])
   @@index([status, expiresAt])
 }

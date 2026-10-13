@@ -40,6 +40,7 @@ export const toolRegistry: ToolMeta[] = [
   { name: 'gitDiff', permission: 'P0', needsApproval: false, outputLimit: '200KB diff', timeoutMs: 30_000 },
   { name: 'readSensitiveFile', permission: 'P2', needsApproval: true, outputLimit: '50 keys / 200KB', timeoutMs: 10_000 },
   { name: 'createPatchProposal', permission: 'P1', needsApproval: false, outputLimit: '10 files / 500KB diff', timeoutMs: 10_000 },
+  { name: 'applyApprovedPatch', permission: 'P2', needsApproval: true, outputLimit: '10 files / 500KB diff', timeoutMs: 30_000 },
 ]
 
 /** 工具名清单，供测试做白名单断言 */

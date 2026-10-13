@@ -6,8 +6,8 @@
 //   listDir / readFile / grep / gitLog / gitDiff / security 都需要能被 node:test 直接单测，
 //   而 'server-only' 在纯 Node 环境下会抛错（它不是 Next.js 的 react-server 条件），
 //   导致测试无法运行。把它们隔离在「测试不引用的出口文件」之外，就能同时满足两件事：
-//     ① 任何客户端组件引用 agentTools → Next.js 构建期直接失败（护栏生效）
-//     ② 工具实现仍可被单测覆盖（护栏不挡测试）
+//     任何客户端组件引用 agentTools → Next.js 构建期直接失败（护栏生效）
+//     工具实现仍可被单测覆盖（护栏不挡测试）
 //   代价：直接 import ./listDir 等子模块可以绕过护栏。**不要那样做**，一律从本文件引入。
 import 'server-only'
 import { tool } from 'ai'
@@ -23,6 +23,11 @@ import {
   createPatchProposalTool,
   setCurrentRunId,
 } from './patchProposal'
+import { applyApprovedPatchTool } from '@/lib/agent/tools/applyPatch'
+import { setAgentRequestContext } from '@/lib/agent/runContext'
+
+
+
 
 /*
  * 基础工具定义（不带 guard）。
@@ -72,6 +77,7 @@ export const baseTools = {
   // 直接复用 readSensitiveFile.ts 里的定义：
   // 它自带 needsApproval: true，不需要在这里重复声明。
   readSensitiveFile: readSensitiveFileTool,
+  applyApprovedPatch: applyApprovedPatchTool,
 }
 
 /**
@@ -169,10 +175,10 @@ function guardTool<T extends { execute?: (...args: never[]) => unknown }>(
  *    agent.toolCall.traceId 变成了 runId，而 chat.POST.traceId 是 requestId，
  *    两者不再相等 → trace 串联断裂，验收项"traceId 与 requestId 一致"失败。
  */
-export function createAgentTools(guard: CallGuard, traceId = 'no-trace', runId = 'no-run') {
+export function createAgentTools(guard: CallGuard, traceId = 'no-trace', runId = 'no-run', userId = '') {
   // patchProposal 工具通过模块作用域读 runId（AI SDK 的 tool() 是模块级对象，
   // execute 拿不到额外上下文），所以每请求设置一次。
-  setCurrentRunId(runId)
+  setAgentRequestContext({ traceId, runId, userId })
   return {
     listDir: guardTool('listDir', baseTools.listDir, guard, traceId, runId),
     readFile: guardTool('readFile', baseTools.readFile, guard, traceId, runId),
@@ -181,6 +187,7 @@ export function createAgentTools(guard: CallGuard, traceId = 'no-trace', runId =
     gitDiff: guardTool('gitDiff', baseTools.gitDiff, guard, traceId, runId),
     readSensitiveFile: guardTool('readSensitiveFile', baseTools.readSensitiveFile, guard, traceId, runId),
     createPatchProposal: guardTool('createPatchProposal', baseTools.createPatchProposal, guard, traceId, runId),
+    applyApprovedPatch: guardTool('applyApprovedPatch', baseTools.applyApprovedPatch, guard, traceId, runId),
   }
 }
 
@@ -188,8 +195,8 @@ export function createAgentTools(guard: CallGuard, traceId = 'no-trace', runId =
  * 便捷入口：每请求一个新的 guard。
  * 参数语义同 createAgentTools —— traceId 与 runId 是两件事，不要合并。
  */
-export function createGuardedAgentTools(traceId = 'no-trace', runId = 'no-run') {
-  return createAgentTools(createCallGuard(), traceId, runId)
+export function createGuardedAgentTools(traceId = 'no-trace', runId = 'no-run', userId = '') {
+  return createAgentTools(createCallGuard(), traceId, runId, userId)
 }
 
 /**

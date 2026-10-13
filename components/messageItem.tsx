@@ -10,6 +10,7 @@ import { renderWithFileRefs } from '@/components/fileLink';
 import { useArtifact } from '@/stores/useArtifact';
 import { uiMessageToText } from '@/lib/chat/mappers';
 import type { MessageStatus } from '@/types/stream';
+import type { ApprovalResponse } from '@/types/stream';
 
 interface MessageItemProps {
   message: UIMessage;
@@ -17,7 +18,7 @@ interface MessageItemProps {
   status?: MessageStatus;
   onReload?: () => void;
   /** 对 needsApproval 的工具做批准/拒绝决定 */
-  onApprovalResponse?: (params: { id: string; approved: boolean; reason?: string }) => void;
+  onApprovalResponse?: (params: ApprovalResponse) => void;
 }
 
 /** 状态徽标文案 */
@@ -231,7 +232,16 @@ export function MessageItem({ message, status = 'done', onReload, onApprovalResp
                     onRespond={
                       state === 'approval-requested' && onApprovalResponse
                         ? (approved, reason) =>
-                            onApprovalResponse({ id: approval.id as string, approved, reason })
+                          onApprovalResponse({
+                            id: approval.id as string,
+                            approved,
+                            reason,
+                            // 工具名与入参必须一起带上：
+                            // 只传 approvalId 的话，上层无法知道"这次批准要不要
+                            // 先把这个 proposal 落库成 approved"。
+                            toolName: name,
+                            input: (part as { input?: unknown }).input,
+                          })
                         : undefined
                     }
                   />

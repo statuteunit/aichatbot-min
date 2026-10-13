@@ -34,3 +34,16 @@ export interface ToolTrace {
   status: 'input-streaming' | 'input-ready' | 'output-ready' | 'error' | 'denied'
   errorText?: string
 }
+
+// 用户在审批卡片上做出的决定。
+export interface ApprovalResponse {
+  /** AI SDK 的审批 id（对应 part.approval.id） */
+  id: string
+  approved: boolean
+  /** 拒绝理由，模型会看到并据此调整策略 */
+  reason?: string
+  /** 触发这次审批的工具名，如 'applyApprovedPatch' */
+  toolName?: string
+  /** 工具入参（applyApprovedPatch 时含 proposalId） */
+  input?: unknown
+}

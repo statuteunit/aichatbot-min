@@ -46,3 +46,9 @@ data/.prisma-schema-hash
 
 .acl-recovery
 .dev.log
+
+# 防止ai生成的临时文件漏删被提交
+*.agent-*.ts
+*.agent-*.tsx
+*.agent-*.js
+*.agent-*.json

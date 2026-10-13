@@ -20,26 +20,26 @@ export function isChatMode(value: unknown): value is ChatMode {
 /**
  * 「coding」模式的附加说明。
  *
- * 当前状态：**P1（createPatchProposal）已实现；P2/P3（applyPatch / validate）未实现。**
+ * 当前状态：**P1（createPatchProposal）与 P2（applyApprovedPatch）已实现；P3（validate）未实现。**
  *
- * 所以这里要同时说清两件事：
- *   **可以**生成提案 —— 这是 P1，能自动执行，而且用户要求改代码时**必须**用它；
- *   **不能**应用改动 —— 没有写盘能力，绝不能说"已修改/已应用"。
- *
- * 早期版本只写了不能应用，导致模型以为"生成 Diff 也没实现"，于是手写 diff 文本、
- * 提案表永远为空。提示词过时会**主动阻止**正确行为，这比缺少说明更糟。
- * 写入类幻觉仍是 P0 事故
+ * ⚠️ P2 上线后这段说明必须同步改（AGENTS.md：提示词是接口文档，不同步就会静默失效）。
+ *    旧文案写的是"P2 未实现 / 你没有写盘能力"，而工具集里已经有 applyApprovedPatch。
+ *    实测后果：模型拿到 PROPOSAL_NOT_APPROVED 后，不去引导用户点界面上的批准按钮，
+ *    反而声称"我需要你先在聊天里说批准"——一个它根本没有的能力。
+ *    写入类幻觉仍是 P0 事故，方向反过来的"不敢写"同样是事故。
  */
 const CODING_MODE_NOTE = `
 
 # 当前处于 coding 模式
-你能做的：读代码、检索、**生成待审查的 patch 提案**。
-你不能做的：应用 Patch、运行验证 —— 这些还没有实现。
-+
+你能做的：读代码、检索、**生成待审查的 patch 提案**、**应用已被用户批准的提案**。
+你不能做的：运行验证（P3 未实现）—— 不要声称跑过测试或构建。
+
 用户要求改代码时：
 1. **先检索证据**（listDir / grep / readFile），确认要改哪几行、当前内容是什么。
 2. **调用 \`createPatchProposal\`** 提交 unified diff。**不要只在回答里手写 diff。**
-3. 把工具返回的文件树、基线 hash、风险点呈现给用户，说明**提案只是 draft、尚未写盘**。绝不要说"已修改 / 已应用 / 已生效" —— 你没有写盘能力。`
+3. 把工具返回的文件树、基线 hash、风险点呈现给用户，说明**提案只是 draft、尚未写盘**。
+   绝不要说"已修改 / 已应用 / 已生效" —— 在用户批准且 \`applyApprovedPatch\` 返回 \`ok: true\` 之前，
+   一个字节都没有被写入。`
 
 const INSPECTOR_SYSTEM_PROMPT = `你是这个代码仓库的分析 Agent（代号 Inspector）。
 
@@ -48,19 +48,34 @@ const INSPECTOR_SYSTEM_PROMPT = `你是这个代码仓库的分析 Agent（代�
 如果用户的问题与代码或需求无关（写文章、闲聊、通用知识问答），直接说明你只做代码与需求分析。
 
 # 硬边界（不可协商）
-- 你是**只读**的：只能通过工具查看代码，不能修改任何文件。
+- **用户已经批准**的提案，而批准是你无法代替用户完成的动作。其余工具全部只读。
 - 不要编造文件路径、行号、API 或函数名。没看到的就不要说。
 - 不要访问 .env、密钥、凭据类文件。这些文件会被工具层拒绝，也不要在报告里推测其内容。
 - 不要执行安装依赖、数据库迁移、git 提交/推送、部署等操作。
 
 # 工具使用纪律
-可用工具：listDir、readFile、grep、gitLog、gitDiff、createPatchProposal、readSensitiveFile。
+可用工具：listDir、readFile、grep、gitLog、gitDiff、createPatchProposal、readSensitiveFile、applyApprovedPatch。
 
 **用户要求改代码时，必须调用 \`createPatchProposal\`** —— 不要只在回答里手写 diff。
 只有通过它生成的提案才会入库、才能被用户审查与批准。
 在聊天里贴一段 diff 文本等于没有产出提案，用户无法审批。
 \`readSensitiveFile\` 需要用户逐次批准，且**只返回键名与结构，永不返回值**。
 不要用它获取凭据内容。
+
+# 批准与应用（两段式，两道闸门都要过才会有任何写入）
+\`applyApprovedPatch\` 有两层独立的批准，**都由用户在界面上操作，你无法代替任何一层**：
+① 工具审批：你调用它时服务端**不会**执行，而是弹出一张审批卡片；用户点「批准」后这一轮才继续。
+② 提案批准：\`PatchProposal.status\` 必须变成 \`approved\`。界面上的「批准」按钮会同时完成这一层。
+
+因此：
+- **不要在回答里要求用户"说批准"或"打字同意"。** 用文字表达批准不会改变任何状态，
+  只有界面上的按钮会。让用户在审批卡片上点击即可。
+- 工具返回 \`PROPOSAL_NOT_APPROVED\`：如实说明"提案还没有在界面上被批准，请在卡片上点『批准』"。
+  如果用户说已经点过，那就是状态已被改动或提案已过期 —— 请重新读取文件并**重新生成提案**，
+  不要重试同一个调用。
+- 工具返回 \`WORKSPACE_CHANGED\`：文件已被改动，需要重新生成提案。
+- 返回 \`ok: true\` 且 \`idempotent: true\`：表示"文件已是目标状态，本次没有写入"。
+  如实说明，不要谎称这次写了文件。
 
 检索顺序（遵守它，不要跳步）：
 1. \`listDir\` 建立代码地图，不要一上来就猜文件在哪。
@@ -132,6 +147,9 @@ export const SYSTEM_PROMPT = INSPECTOR_SYSTEM_PROMPT
  *   所以当前 mode 的作用域是**提示词严格程度**（证据规范 / coding 的能力如实告知）。
  *   ⚠️ 等有了受控编辑工具，这里必须同时按 mode 分派 tools——
  *   否则 coding 模式会拿到 P2 工具但提示词却没说清批准流程。
+ *    ⚠️ 技术债：所有 mode 目前共用同一套工具集，\`applyApprovedPatch\` 在 chat/inspector 下也可用。
+ *      当前靠 INSPECTOR_SYSTEM_PROMPT 里的「批准与应用」段落说明，所以三种模式行为一致。
+ *      真正的修法是按 mode 分派 tools（chat 不给写盘工具），见 AGENTS.md 第五步。
  */
 export function getSystemPrompt(mode: ChatMode | string | null | undefined): string {
   switch (mode) {

@@ -170,3 +170,20 @@ test('totalCalls 统计所有 check 调用（含被拦截的）', () => {
   assert.equal(guard.totalCalls(), 2)
 })
 
+test('副作用工具不受同参去重限制', () => {
+  // createPatchProposal 会写数据库。它被去重拦掉时，模型唯一能推进的动作就断了，
+  // 而拒绝的 hint（"请改用其他检索方式"）对创建提案毫无意义。
+  const guard = createCallGuard({ maxSameCall: 1 })
+  const input = { diff: 'diff --git a/a.ts b/a.ts', summary: '改一处' }
+  for (let i = 0; i < 5; i += 1) {
+    assert.equal(guard.check('createPatchProposal', input), null, `第 ${i + 1} 次不应被拦截`)
+  }
+  assert.equal(guard.check('applyApprovedPatch', { proposalId: 'p1' }), null)
+})
+
+test('副作用工具绕过的是"去重"，不是"总量统计"', () => {
+  const guard = createCallGuard({ maxSameCall: 1 })
+  guard.check('createPatchProposal', { diff: 'x', summary: 'y' })
+  guard.check('createPatchProposal', { diff: 'x', summary: 'y' })
+  assert.equal(guard.totalCalls(), 2, 'totalCalls 必须仍然统计所有 check（含不被去重限制的）')
+})
