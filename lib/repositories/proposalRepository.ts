@@ -3,9 +3,10 @@
 import 'server-only'
 import { prisma } from '@/lib/db'
 import { logEvent } from '@/lib/logging'
-import { readWorkspaceFileOrNull, sha256 } from '@/lib/agent/workspace'
+import { readWorkspaceFileOrNull, sha256, workspaceIdForCurrentCheckout } from '@/lib/agent/workspace'
 import path from 'node:path'
 import { getWorkspaceRoot } from '@/lib/agent/security'
+import { retryTransient } from '@/lib/agent/dbRetry'
 
 export interface CreateProposalParams {
   runId: string
@@ -145,6 +146,52 @@ export async function isAgentRunUsable(runId: string): Promise<boolean> {
   if (typeof runId !== 'string' || runId.trim().length === 0) return false
   const found = await prisma.agentRun.count({ where: { id: runId } })
   return found > 0
+}
+
+/**
+ * 为「本轮对话」取一个可用的 AgentRun.id（没有就建）。
+ *
+ * 为什么需要：ToolCallRecord.runId 是**非空外键**，而普通的问答回合
+ * 不一定先建 run（只有提案链路才建）。没有真 run 时工具留痕会整批
+ * 因外键失败而写不进去，表现就是"刷新历史后工具时间线消失"。
+ *
+ * 幂等：同一 traceId 已有 run 就直接复用，不新建第二条。
+ * 这里**不用** ensureAgentRun —— 那个按 baselineHash 分 run，语义是"提案的基线"，
+ * 与"本轮对话的工具留痕"不是一回事。
+ */
+export async function ensureToolCallRun(params: {
+  chatId: string
+  userId: string
+  traceId: string
+}): Promise<string | null> {
+  const existing = await prisma.agentRun.findFirst({
+    where: { traceId: params.traceId, chatId: params.chatId },
+    select: { id: true },
+    orderBy: { createdAt: 'desc' },
+  })
+  if (existing) return existing.id
+
+  const chat = await prisma.chat.findFirst({
+    where: { id: params.chatId, userId: params.userId },
+    select: { id: true },
+  })
+  if (!chat) return null
+
+  const created = await retryTransient(
+    () =>
+      prisma.agentRun.create({
+        data: {
+          chatId: params.chatId,
+          userId: params.userId,
+          workspaceId: workspaceIdForCurrentCheckout(),
+          traceId: params.traceId,
+          status: 'inspecting',
+        },
+        select: { id: true },
+      }),
+    { label: 'agent.ensureToolCallRun' },
+  )
+  return created.id
 }
 
 /**
@@ -324,5 +371,20 @@ export async function findActiveProposalByDiffHash(params: {
     },
     orderBy: { createdAt: 'desc' },
     select: { id: true, status: true, expiresAt: true, summary: true },
+  })
+}
+
+/**
+ * 取一个**属于该用户**的提案，供 P3 验证工具做归属与状态判定。
+ * 用 relation filter（run.userId）一次查完，而不是"先查提案再查 run"：
+ * 后者是 check-then-act，两次查询之间状态可能变化，且多一次远程往返。
+ */
+export async function findOwnedProposalForValidation(params: {
+  proposalId: string
+  userId: string
+}) {
+  return prisma.patchProposal.findFirst({
+    where: { id: params.proposalId, run: { userId: params.userId } },
+    select: { id: true, status: true, workspaceId: true, appliedAt: true, expiresAt: true },
   })
 }

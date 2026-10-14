@@ -144,6 +144,22 @@ function proposalIdOf(toolName: string | undefined, input: unknown): string | nu
   return typeof raw === 'string' && raw.length > 0 ? raw : null
 }
 
+// 批准接口回 409 时，用来判断"是不是其实已经批准过了"。
+// approveProposal 只在 status === 'draft' 时成功，所以重复提交、或另一条路径
+// 刚批准完，第二次必然拿到 409 —— 那不是失败。
+async function isProposalAlreadyApproved(proposalId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/agent/proposals/${encodeURIComponent(proposalId)}`, {
+      cache: 'no-store',
+    })
+    if (!res.ok) return false
+    const body = (await res.json().catch(() => null)) as { proposal?: { status?: string } } | null
+    return body?.proposal?.status === 'approved'
+  } catch {
+    return false
+  }
+}
+
 export function useChat(options: UseChatOptions = {}): UseChatReturn {
   const { chatId, api = '/api/chat', model, mode, initialMessages = [] } = options
 
@@ -280,7 +296,14 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
             const body = (await res.json().catch(() => null)) as
               | { message?: string; error?: string }
               | null
-            failure = body?.message ?? `提案批准被拒绝（HTTP ${res.status} ${body?.error ?? ''}）`.trim()
+            // 409 通常是"已经批准过了"：重复提交、或另一条路径刚批准完。
+            // 这时批准其实已经落库，把它当成失败会把已经批准的一轮拒掉，
+            // 模型只好再发一轮消息重新请求批准 —— 用户看到的就是"又要重新批准"。
+            if (res.status === 409 && (await isProposalAlreadyApproved(proposalId))) {
+              failure = null
+            } else {
+              failure = body?.message ?? `提案批准被拒绝（HTTP ${res.status} ${body?.error ?? ''}）`.trim()
+            }
           }
         } catch (err) {
           failure = `提案批准请求失败：${err instanceof Error ? err.message : String(err)}`

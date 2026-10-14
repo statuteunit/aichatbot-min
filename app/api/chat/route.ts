@@ -11,8 +11,10 @@ import {
     getChatById,
     saveUserMessage,
     upsertAssistantMessage,
+    saveToolCallRecords,
     updateChatSummary,
     extractTextFromParts,
+    type ToolCallRecordInput,
 } from '@/lib/repositories/chatRepository'
 import { chatModels, DEFAULT_CHAT_MODEL } from '@/lib/model'
 import {
@@ -24,7 +26,7 @@ import { createAgentRun } from '@/lib/repositories/proposalRepository'
 import { workspaceIdForCurrentCheckout } from '@/lib/agent/workspace'
 import { setAgentRequestContext } from '@/lib/agent/runContext'
 import { isRetryableDbError, retryTransient } from '@/lib/agent/dbRetry'
-import { updateAgentRunStatus } from '@/lib/repositories/proposalRepository'
+import { updateAgentRunStatus, isAgentRunUsable, ensureToolCallRun } from '@/lib/repositories/proposalRepository'
 
 /**
  * 与 OpenRouter 的 OpenAI 兼容层对接。
@@ -35,8 +37,8 @@ const openrouter = createOpenAI({
     apiKey: process.env.OPENROUTER_API_KEY,
 })
 
-/** 工具步数上限：product-spec §11 要求 stepCountIs(8)，防止无限循环 */
-const MAX_STEPS = 8
+/** 工具步数上限：要求 stepCountIs(20)，防止无限循环 */
+const MAX_STEPS = 20
 
 /**
  * 请求体校验。
@@ -172,6 +174,93 @@ function flattenForLength(messages: UIMessage[]): number {
         }
     }
     return total
+}
+
+function buildToolDigest(parts: ReadonlyArray<{ type: string; toolName?: string; state?: string }>): string {
+    const lines = parts
+        .filter((p) => p.type.startsWith('tool-') && p.toolName)
+        .map((p) => `- \`${p.toolName}\` · ${p.state === 'output-available' ? '完成' : p.state ?? '未知'}`)
+    return lines.length ? `\n\n---\n**本回合工具调用**\n${lines.join('\n')}` : ''
+}
+
+/**
+ * 工具 part 的 state → ToolCallRecord.status（取值见 prisma schema 的注释）。
+ * approval-responded 的成败由 part.approval.approved 决定，不能只看 state。
+ */
+const TOOL_RECORD_STATUS: Record<string, string> = {
+    'output-available': 'ok',
+    'output-error': 'error',
+    'output-denied': 'denied',
+    'approval-requested': 'awaiting_approval',
+    'input-available': 'awaiting_approval',
+    'input-streaming': 'awaiting_approval',
+}
+
+/** 留痕里 input/output 的体积上限：超了就存"截断标记"，别把大对象铺进数据库 */
+const TOOL_INPUT_MAX_CHARS = 4000
+const TOOL_OUTPUT_MAX_CHARS = 2000
+
+function truncateForRecord(value: unknown, maxChars: number): unknown {
+    if (value === undefined || value === null) return {}
+    let json: string
+    try {
+        json = JSON.stringify(value)
+    } catch {
+        return { _unserializable: true }
+    }
+    // JSON.stringify(undefined) / 函数 / Symbol 都会返回 undefined
+    if (typeof json !== 'string') return {}
+    if (json.length <= maxChars) return JSON.parse(json) as unknown
+    return { _truncated: true, bytes: json.length, preview: json.slice(0, maxChars) }
+}
+
+/**
+ * 把本回合的 tool part 收敛成留痕行。
+ *
+ * outcome 只留**摘要**（不是原文）：与 lib/agent/trace.ts 的隐私纪律一致 ——
+ * 工具输出里可能有整份文件内容，不该原样进库、更不该回放给模型。
+ */
+function collectToolCallRecords(
+    parts: ReadonlyArray<{
+        type: string
+        toolName?: string
+        state?: string
+        input?: unknown
+        output?: unknown
+        approval?: { id?: string; approved?: boolean }
+    }>,
+): ToolCallRecordInput[] {
+    const records: ToolCallRecordInput[] = []
+
+    for (const part of parts) {
+        if (!part.type.startsWith('tool-') && part.type !== 'dynamic-tool') continue
+        const toolName = part.toolName ?? (part.type.startsWith('tool-') ? part.type.slice('tool-'.length) : '')
+        if (!toolName) continue
+
+        const state = part.state ?? ''
+        const approved = part.approval?.approved
+        const status =
+            state === 'approval-responded'
+                ? approved === false
+                    ? 'denied'
+                    : 'ok'
+                : TOOL_RECORD_STATUS[state] ?? 'ok'
+
+        records.push({
+            toolName,
+            status,
+            input: truncateForRecord(part.input, TOOL_INPUT_MAX_CHARS),
+            output:
+                part.output === undefined || part.output === null
+                    ? null
+                    : JSON.stringify(truncateForRecord(part.output, TOOL_OUTPUT_MAX_CHARS)),
+            approvalId: part.approval?.id ?? null,
+            // 单次工具耗时在 trace 里，不在 part 里；这里不编造
+            durationMs: null,
+        })
+    }
+
+    return records
 }
 
 export const POST = withApiLogging({
@@ -426,19 +515,65 @@ export const POST = withApiLogging({
 
                 if (!chatId) return
                 try {
-                    const { content } = await upsertAssistantMessage({
+                    const { content, messageId: persistedMessageId } = await upsertAssistantMessage({
                         chatId,
                         userId,
                         message: responseMessage,
                         isAborted,
+                        // 正文太短时补上工具摘要，避免历史里只剩几个字
+                        content: text + buildToolDigest(responseMessage.parts ?? []),
                     })
                     logEvent('info', 'chat.persist', {
                         requestId,
                         chatId,
-                        messageId: responseMessage.id,
+                        // 记**落库后的真实主键**：responseMessage.id 可能是空串
+                        // （见 chat.assistantIdFallback），照着它查库永远查不到这一行
+                        messageId: persistedMessageId,
+                        sdkMessageId: responseMessage.id || null,
                         isAborted,
                         contentLength: content.length,   // 只记长度，不记内容
                     })
+
+                    // 工具留痕：必须在 upsertAssistantMessage 之后 —— ToolCallRecord.messageId
+                    // 要挂到刚写入的那一行上，而流式期间 messageId 还是未知（传的是 null）。
+                    // 单独 try/catch：留痕失败不该被记成"消息落库失败"。
+                    const toolRecords = collectToolCallRecords(responseMessage.parts ?? [])
+                    if (toolRecords.length > 0 && persistedMessageId) {
+                        try {
+                            const runId =
+                                agentRunId && (await isAgentRunUsable(agentRunId))
+                                    ? agentRunId
+                                    : await ensureToolCallRun({ chatId, userId, traceId: requestId })
+                            if (runId) {
+                                const saved = await saveToolCallRecords({
+                                    messageId: persistedMessageId,
+                                    runId,
+                                    records: toolRecords,
+                                })
+                                logEvent('info', 'chat.toolCallRecordsSaved', {
+                                    requestId,
+                                    chatId,
+                                    messageId: persistedMessageId,
+                                    runId,
+                                    count: saved,
+                                })
+                            } else {
+                                // 会话不属于当前用户（或已删除）：只记日志，不影响主链路
+                                logEvent('warn', 'chat.toolCallRecordsSkipped', {
+                                    requestId,
+                                    chatId,
+                                    reason: 'no-run',
+                                })
+                            }
+                        } catch (err) {
+                            logEvent('warn', 'chat.toolCallRecordsFailed', {
+                                requestId,
+                                chatId,
+                                messageId: persistedMessageId,
+                                error: err instanceof Error ? err.message : String(err),
+                            })
+                        }
+                    }
 
                     if (agentRunId) {
                         void updateAgentRunStatus(agentRunId, 'done').catch((err) => {

@@ -17,6 +17,7 @@ test('工具注册表里不存在任何写入能力', () => {
     'listDir',
     'readFile',
     'readSensitiveFile',
+    'runApprovedValidation',
   ])
 })
 
@@ -74,22 +75,26 @@ test('P1 工具可以自动执行，但绝不允许改写工作区', () => {
   assert.ok(p1.length >= 1, '至少应有一个 P1 工具（createPatchProposal）')
 })
 
-test('写盘工具只能以 P2 + 强制审批的形式存在', () => {
-  // 这条断言的前身是"V1 尚未实现写盘工具 → hasWriteTool 必须为 false"。
-  // 落地 applyApprovedPatch 后，它按设计报红了；现在把它翻转成：
-  // 写盘工具**可以存在**，但必须同时满足三个条件，缺一即失败。
+test('写盘/执行类工具只能以 P2 + 强制审批的形式存在', () => {
   const WRITE_TOOL_NAMES = ['applyApprovedPatch', 'runApprovedValidation', 'writeFile', 'deleteFile']
   const writeTools = toolRegistry.filter((t) => WRITE_TOOL_NAMES.includes(t.name))
 
-  assert.ok(writeTools.length >= 1, 'Day 24–25 后应至少有一个写盘工具（applyApprovedPatch）')
+  assert.ok(writeTools.length >= 2, 'Day 26 后应同时有 applyApprovedPatch 与 runApprovedValidation')
 
   for (const t of writeTools) {
-    assert.equal(t.permission, 'P2', `${t.name} 是写盘工具，权限必须是 P2（P1 的语义是只读）`)
-    assert.equal(t.needsApproval, true, `${t.name} 是写盘工具，必须 needsApproval: true`)
+    // P2 = 改写工作区；P3 = 执行受控任务。两者的共同底线是 must-approve
+    assert.ok(
+      t.permission === 'P2' || t.permission === 'P3',
+      `${t.name} 必须是 P2 或 P3，当前 ${t.permission}`,
+    )
+    assert.equal(t.needsApproval, true, `${t.name} 是写盘/执行类工具，必须 needsApproval: true`)
   }
 
-  // 反向断言：P1 工具一个都不许出现在写盘名单里。
-  // 用 filter 而不是 some，是为了在失败信息里直接列出违规的工具名。
+  // 反向断言：验证工具的权限必须恰好是 P3（product-spec 权限表）
+  const validation = toolRegistry.find((t) => t.name === 'runApprovedValidation')
+  assert.equal(validation?.permission, 'P3', 'runApprovedValidation 必须是 P3')
+
+  // 反向断言：P1 工具一个都不许出现在写盘名单里（不变）
   const p1WriteTools = toolRegistry
     .filter((t) => t.permission === 'P1' && WRITE_TOOL_NAMES.includes(t.name))
     .map((t) => t.name)

@@ -184,8 +184,8 @@ export async function createPatchProposal(
       previewUrl: `/agent/proposals/${proposal.id}`,
       note:
         '提案已保存为 draft，**尚未修改任何文件**。' +
-        '请把上面的文件树与风险点呈现给用户，由用户审查后决定是否批准。' +
-        '不要声称已经修改了代码。',
+        '请把上面的文件树与风险点呈现给用户，随后在同一回合调用 applyApprovedPatch。' +
+        '卡片上会展示 Diff 供用户审查',
     }
   } catch (err) {
     return toToolErrorResult(err)

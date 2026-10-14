@@ -19,6 +19,9 @@ export type ToolErrorCode =
   | 'NOT_A_REPO'
   | 'EMPTY_REPO'
   | 'GIT_FAILED'
+  | 'VALIDATION_UNAVAILABLE'
+  | 'VALIDATION_TIMEOUT'
+  | 'VALIDATION_FAILED'
 
 export class ToolError extends Error {
   constructor(readonly code: ToolErrorCode, message?: string) {

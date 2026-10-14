@@ -31,7 +31,7 @@
 
 - **只读检索已可用**：`lib/agent/tools/` 已实现 `listDir / readFile / grep / gitLog / gitDiff` 五个 P0 只读工具，
   路径白名单、敏感文件屏蔽、输出上限在 `lib/agent/security.ts` 与 `lib/agent/exec.ts` 中统一实现。
-- **多步工具循环已接上**：`app/api/chat/route.ts` 使用 `streamText + stopWhen: stepCountIs(8)`，
+- **多步工具循环已接上**：`app/api/chat/route.ts` 使用 `streamText + stopWhen: stepCountIs(20)`，
   工具集来自 `lib/agent/tools/index.ts`，产物是 AI SDK 的 UI Message Stream。
 - **模型仍无法写盘**：P1/P2/P3 工具（`createPatchProposal`、`applyApprovedPatch`、`runApprovedValidation`）
   均未实现——这是 V1 的硬边界，见 §2.4。
@@ -445,7 +445,7 @@ model ToolCallRecord {
 | **流式体验** | 工具调用过程实时可见（「正在读取 X」），不允许长时间无输出 |
 | **可中断** | 复用现有 `stop`（AbortController）机制，中断后保留已生成内容 |
 | **单次分析时长** | 目标 ≤ 90s；超过 3 分钟应提示用户缩小问题范围 |
-| **工具步数上限** | `stepCountIs(8)`，防止无限循环 |
+| **工具步数上限** | `stepCountIs(20)`，防止无限循环 |
 | **成本** | 单次分析 token 预算上限可配置，超限终止并产出阶段性结论 |
 | **编辑时限** | 提案默认 30 分钟过期；审批后、应用前再次检查目标文件基线 hash |
 | **编辑范围** | 单份提案最多 10 个文件、总 diff 最多 500KB；超限需拆分提案并分别审批 |

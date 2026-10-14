@@ -39,7 +39,7 @@ export type ApplyPatchInput = z.infer<typeof ApplyPatchInputSchema>
 export const applyApprovedPatchTool = tool({
   description:
     '把一个**已被用户批准**的 patch 提案应用到工作区。' +
-    '这是唯一会修改文件的工具：只有用户在看过程 Diff、风险与文件树并明确批准后才能调用。' +
+    '这是唯一会修改文件的工具：调用时会弹出审批卡片，卡片上会渲染该提案的 Diff 与文件树；用户点批准后才会写盘。' +
     '应用是原子的：失败会回滚，不会留下改了一半的文件。重复应用同一个提案不会重复写入。',
   inputSchema: ApplyPatchInputSchema,
   needsApproval: true,
@@ -65,11 +65,17 @@ export const applyApprovedPatchTool = tool({
               '在审批卡片上点「批准」—— 在聊天里用文字说"批准"不会改变任何状态。' +
               '如果用户说已经点过了，说明提案状态已被改动或已过期，' +
               '请重新读取文件并重新生成提案，不要重试本调用。'
-              : outcome.code === 'WORKSPACE_CHANGED'
-                ? '工作区在提案创建后变了。请重新读取相关文件、重新生成提案，不要尝试强行应用。'
-                : outcome.code === 'PROPOSAL_EXPIRED'
-                  ? '提案已过期，请重新生成并让用户重新批准。'
-                  : '请把失败原因如实告诉用户，不要声称已经修改了文件。',
+              : outcome.code === 'HUNK_CONTEXT_MISMATCH' || outcome.code === 'HUNK_RANGE_INVALID'
+                ? '这次失败不是「基线漂移」：服务端已核对过文件哈希，磁盘与提案的基线一致，' +
+                '是 diff 里的上下文行与文件对不上（常见原因：缩进空格数抄错、行尾字符不同）。' +
+                '请先用 readFile 读取报错行所在的行区间，逐字核对缩进与行尾，再决定是否修正提案；' +
+                '同一回合最多重新生成 1 次提案，仍失败就停下来把原因如实告诉用户。'
+                : outcome.code === 'WORKSPACE_CHANGED'
+                  ? '工作区在提案创建后确实变了。请重新读取相关文件、重新生成提案；' +
+                  '同一回合最多重新生成 1 次提案，仍失败就停下来把原因如实告诉用户，不要尝试强行应用。'
+                  : outcome.code === 'PROPOSAL_EXPIRED'
+                    ? '提案已过期，请重新生成并让用户重新批准。'
+                    : '请把失败原因如实告诉用户，不要声称已经修改了文件。',
           conflicts: outcome.conflicts ?? [],
         }
       }

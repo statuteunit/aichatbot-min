@@ -10,13 +10,13 @@
 // 此时服务端才真正执行工具（或直接把拒绝理由回给模型）。
 //
 // 设计要点：
-//   ① 参数必须展示给用户 —— 审批的意义就是让人看到"模型想干什么"。
+//   参数必须展示给用户 —— 审批的意义就是让人看到"模型想干什么"。
 //      但只展示**参数**，不展示未产出的结果。
-//   ② 拒绝时收集理由：模型会收到这个 reason 并据此调整策略，
-//      比单纯拒绝有用得多（product-spec §3.4：「用户拒绝审批 → 持久化拒绝原因；
+//   拒绝时收集理由：模型会收到这个 reason 并据此调整策略，
+//      比单纯拒绝有用得多（「用户拒绝审批 → 持久化拒绝原因；
 //      提示模型不重试同一工具调用」）。
-//   ③ 已决定后卡片变成只读回执，不再显示按钮 —— 防止重复提交。
-import { useState } from 'react'
+//   已决定后卡片变成只读回执，不再显示按钮 —— 防止重复提交。
+import { useState, useEffect } from 'react'
 import { cn } from '@/lib/utils'
 
 /** 工具审批的状态机（与 AI SDK 的 ToolUIPart.state 对应） */
@@ -27,9 +27,26 @@ export type ApprovalState =
   | 'output-error'
   | 'output-denied'
 
+/**
+ * GET /api/agent/proposals/[id] 的响应体（只声明审批卡片用得上的字段）。
+ * apply 类卡片要展示「这次到底会改什么」，所以会按 proposalId 拉取它。
+ */
+export interface ProposalDetail {
+  proposal: {
+    id: string
+    /** unified diff 全文 */
+    diff: string
+  }
+  /** 目录树文本 */
+  treeText: string
+  diffValid: boolean
+}
+
 export interface ApprovalCardProps {
   /** 工具展示名（已本地化，如「查看敏感文件结构」） */
   toolLabel: string
+  /** 工具的原始名称（如 applyApprovedPatch），用于判断是否拉取提案详情 */
+  toolName?: string
   /** 模型请求的原始参数，直接展示给用户审查 */
   input: unknown
   state: ApprovalState
@@ -64,6 +81,7 @@ function formatInput(input: unknown): string {
 
 export function ApprovalCard({
   toolLabel,
+  toolName,
   input,
   state,
   approved,
@@ -85,6 +103,34 @@ export function ApprovalCard({
         ? 'border-amber-300 bg-amber-50'
         : 'border-gray-200 bg-gray-50'
 
+  const [detail, setDetail] = useState<ProposalDetail | null>(null)
+  const [detailError, setDetailError] = useState<string | null>(null)
+
+  const proposalId =
+    toolName === 'applyApprovedPatch' && input && typeof input === 'object' && 'proposalId' in input
+      ? String((input as { proposalId?: unknown }).proposalId ?? '')
+      : ''
+
+  useEffect(() => {
+    if (!proposalId) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const res = await fetch(`/api/agent/proposals/${encodeURIComponent(proposalId)}`, {
+          cache: 'no-store',
+        })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const data = (await res.json()) as ProposalDetail
+        if (!cancelled) setDetail(data)
+      } catch (error) {
+        if (!cancelled) setDetailError(error instanceof Error ? error.message : '加载提案详情失败')
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [proposalId])
+
   return (
     <div className={cn('mt-2 rounded-lg border px-3 py-2 text-sm', headerTone)}>
       <div className="flex items-center gap-2">
@@ -101,6 +147,25 @@ export function ApprovalCard({
           {formatInput(input)}
         </pre>
       </div>
+
+      {proposalId ? (
+        <div className="mt-3 space-y-2">
+          <p className="text-xs font-medium">本次将要应用的改动</p>
+          {detailError ? (
+            <p className="text-xs text-destructive">提案详情加载失败：{detailError}</p>
+          ) : !detail ? (
+            <p className="text-xs text-muted-foreground">正在加载 Diff…</p>
+          ) : (
+            <>
+              <pre className="max-h-48 overflow-auto rounded bg-muted p-2 text-xs">{detail.treeText}</pre>
+              <details>
+                <summary className="cursor-pointer text-xs">查看完整 diff</summary>
+                <pre className="mt-1 max-h-80 overflow-auto rounded bg-muted p-2 text-xs">{detail.proposal.diff}</pre>
+              </details>
+            </>
+          )}
+        </div>
+      ) : null}
 
       {/* 已决定：显示回执 */}
       {!pending && (

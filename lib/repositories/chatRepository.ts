@@ -1,7 +1,7 @@
 import 'server-only'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '@/lib/db'
-import { Role } from '@prisma/client'
+import { Prisma, Role } from '@prisma/client'
 import { logEvent } from '@/lib/logging'
 import { retryTransient } from '@/lib/agent/dbRetry'
 const DEFAULT_CHAT_TITLE = '新对话'
@@ -205,7 +205,7 @@ export async function upsertAssistantMessage(params: {
    * 前端迁移完成后可以删掉这个参数与对应调用。
    */
   content?: string
-}): Promise<{ content: string }> {
+}): Promise<{ content: string; messageId: string }> {
   const { chatId, userId, message, isAborted = false } = params
   // parts 优先；没有 parts 时回落到显式 content（旧路径）
   const content = params.content ?? extractTextFromParts(message.parts)
@@ -236,7 +236,7 @@ export async function upsertAssistantMessage(params: {
   // 中止且无任何文本（用户刚发就停）：不要写入空白记录。
   // 这一步放在事务外，省一次数据库往返（所有权校验在事务内仍然保留）。
   if (!content && isAborted) {
-    return { content: '' }
+    return { content: '', messageId: '' }
   }
 
   const owned = await retryTransient(
@@ -285,7 +285,62 @@ export async function upsertAssistantMessage(params: {
     })
   }
 
-  return { content }
+  // 把最终主键回传出去：工具留痕（ToolCallRecord.messageId）必须挂到这一行上，
+  // 而流式期间调用方还不知道它（setAgentRequestContext 里传的是 null）。
+  return { content, messageId }
+}
+
+/** 一条工具留痕。字段与 prisma schema 的 ToolCallRecord 对齐 */
+export interface ToolCallRecordInput {
+  toolName: string
+  /** ok | awaiting_approval | denied | error —— 与 schema 注释同一套取值 */
+  status: string
+  input: unknown
+  /** 输出**摘要**（不是原文 —— 隐私纪律见 lib/agent/trace.ts）。只用于历史回放展示 */
+  output: string | null
+  approvalId: string | null
+  durationMs: number | null
+}
+
+/**
+ * 写入本回合的工具留痕。
+ *
+ * 为什么必须有：Message.content 只装 text part，工具调用不在里面。
+ * 不落 ToolCallRecord 的话，刷新后工具时间线整段消失，
+ * 助手气泡只剩下模型当时写的几个字 —— 看起来就是"AI 消息变空了"。
+ *
+ * runId 是**非空外键**（ToolCallRecord.runId → AgentRun.id）。
+ * 调用方必须先用 ensureToolCallRun()/agentRunId 拿到**真实存在**的 run，
+ * 不能用 traceId 冒充（那是 PatchProposal_runId_fkey 事故的同一类错误）。
+ */
+export async function saveToolCallRecords(params: {
+  messageId: string
+  runId: string
+  records: ToolCallRecordInput[]
+}): Promise<number> {
+  const { messageId, runId, records } = params
+  // 没有 messageId（中止且无文本）或没有工具调用时，不写空记录
+  if (!messageId || records.length === 0) return 0
+
+  const result = await retryTransient(
+    () =>
+      prisma.toolCallRecord.createMany({
+        data: records.map((record) => ({
+          runId,
+          messageId,
+          toolName: record.toolName,
+          // 兜 `{}` 而不是 null：Json 列不接受裸 null 作为 InputJsonValue
+          input: (record.input ?? {}) as Prisma.InputJsonValue,
+          output: record.output,
+          status: record.status,
+          approvalId: record.approvalId,
+          durationMs: record.durationMs,
+        })),
+      }),
+    { label: 'chat.saveToolCallRecords' },
+  )
+
+  return result.count
 }
 
 export async function saveUserMessage(params: {
@@ -349,7 +404,7 @@ export async function saveUserMessage(params: {
           data: {
             updatedAt: new Date(),
             ...(updatedTitle
-              ? { title: updatedTitle, titleSource: 'auto' }
+              ? { title: updatedTitle }
               : {}),
           },
         }),
@@ -488,6 +543,22 @@ export async function getChatMessagesPage(
     // 倒序返回，需要翻转
     take: limit + 1,
     // 判断是否还有下一页
+    // 带上工具留痕：Message.content 里没有工具过程，
+    // 不一起取出来，历史里就只剩模型当时写的那几个字（"AI 消息变空"）
+    include: {
+      toolCallRecords: {
+        orderBy: { createdAt: 'asc' },
+        select: {
+          id: true,
+          toolName: true,
+          status: true,
+          input: true,
+          output: true,
+          approvalId: true,
+          durationMs: true,
+        },
+      },
+    },
   })
 
   const hasMore = rows.length > limit

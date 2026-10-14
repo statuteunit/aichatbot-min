@@ -196,7 +196,8 @@ export function parseFilePatches(diff: string): { ok: true; files: FilePatch[] }
       if (current) {
         if (line.startsWith('\\')) continue
         if (line === '') continue
-        current.lines.push(line)
+        // 解析diff去掉行尾/r
+        current.lines.push(line.replace(/\r$/, ''))
       }
       // 其余行（index 行、mode 行等）忽略
     }
@@ -232,8 +233,13 @@ function applyHunks(
   path: string,
 ): { ok: true; text: string } | { ok: false; code: PatchRejectionCode; message: string } {
   const hadTrailingNewline = original.endsWith('\n')
-  const rawLines = original.split('\n')
-  // 末尾换行会在 split 后多出一个空字符串元素，去掉它以便按行号对齐
+  // 行尾归一化：本 checkout 的文件是 CRLF（git core.autocrlf=true 且无 .gitattributes），
+  // 而模型给出的 unified diff 是 LF。若不归一化，磁盘每行末尾都带一个 \r，
+  // 与 diff 里的上下文行永远不相等 —— 每个 hunk 都会在第一个上下文行报
+  // HUNK_CONTEXT_MISMATCH，看起来却像“基线漂移”。
+  const eol = original.includes('\r\n') ? '\r\n' : '\n'
+  const normalized = eol === '\r\n' ? original.replace(/\r\n/g, '\n') : original
+  const rawLines = normalized.split('\n')
   const lines = hadTrailingNewline ? rawLines.slice(0, -1) : rawLines
 
   const out: string[] = []
@@ -322,7 +328,7 @@ function applyHunks(
 
   for (let i = cursor; i < lines.length; i += 1) out.push(lines[i])
   // 保持原有"是否以换行结尾"的性质，避免无意义地改动文件末尾
-  return { ok: true, text: out.join('\n') + (hadTrailingNewline ? '\n' : '') }
+  return { ok: true, text: out.join(eol) + (hadTrailingNewline ? eol : '') }
 }
 
 /**

@@ -265,3 +265,22 @@ diff --git a/b.ts b/b.ts
   if (!res.ok) return
   assert.deepEqual(res.files.map((f) => f.path), ['a.ts', 'b.ts'])
 })
+
+test('CRLF 文件：上下文按行尾归一化后匹配，且输出保留 CRLF', () => {
+  const original = 'a\r\nb\r\nc\r\n'
+  const diff = [
+    'diff --git a/f.ts b/f.ts',
+    '--- a/f.ts',
+    '+++ b/f.ts',
+    '@@ -1,3 +1,3 @@',
+    ' a',
+    '-b',
+    '+B',
+    ' c',
+    '',
+  ].join('\n')
+  const res = buildTargetFiles(diff, { 'f.ts': original })
+  assert.equal(res.ok, true)
+  if (!res.ok) return
+  assert.equal(res.plans[0].targetContent, 'a\r\nB\r\nc\r\n')
+})

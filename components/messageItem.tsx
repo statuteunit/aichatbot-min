@@ -225,6 +225,7 @@ export function MessageItem({ message, status = 'done', onReload, onApprovalResp
                   <ApprovalCard
                     key={`${message.id}-approval-${index}`}
                     toolLabel={toolLabel}
+                    toolName={name}
                     input={(part as { input?: unknown }).input}
                     state={state as ApprovalState}
                     approved={approval.approved}

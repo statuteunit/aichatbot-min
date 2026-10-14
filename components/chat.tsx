@@ -16,6 +16,43 @@ import { Button } from "@/components/ui/button"
 import { rowsToUIMessages, type MessageRow } from '@/lib/chat/mappers'
 import { logEvent } from '@/lib/logging'
 
+// 会话快照的"新鲜度"上限：超过这个时间才在后台回源。
+// 缓存的意义就是省掉切会话时那次 messages.GET（实测 5~12s），
+// 所以这里不能是 0（每次切换都打库 = 缓存白做），也不宜太长。
+const SNAPSHOT_TTL_MS = 60_000
+
+// 「上一次打开的会话」——存 sessionStorage（本标签页内有效，关掉标签就清）。
+//
+// 为什么需要它：消息快照（messageCache）活在模块作用域，热更新不会重置；
+// 而 currentChatId 是本组件的 state，热更新一重挂载就归零。
+// 于是出现"缓存里明明有消息，眼前却是空的"。把 id 也持久化下来，
+// 挂载时配合缓存即可瞬间还原，不必让用户重新点一次侧边栏。
+const LAST_CHAT_KEY = 'aichatbot:lastChatId'
+
+function rememberLastChat(chatId: string): void {
+    try {
+        sessionStorage.setItem(LAST_CHAT_KEY, chatId)
+    } catch {
+        // 隐私模式等场景下 sessionStorage 不可用：记不住就算了，不影响功能
+    }
+}
+
+function readLastChat(): string | null {
+    try {
+        return sessionStorage.getItem(LAST_CHAT_KEY)
+    } catch {
+        return null
+    }
+}
+
+function forgetLastChat(): void {
+    try {
+        sessionStorage.removeItem(LAST_CHAT_KEY)
+    } catch {
+        // 同上
+    }
+}
+
 export function Chat() {
     // 选择模型状态
     const [selectedModelId, setSelectedModelId] = useState(DEFAULT_CHAT_MODEL)
@@ -153,6 +190,96 @@ export function Chat() {
         setIsOpen(!isOpen)
     }
 
+    // 当前会话 id 的镜像：后台回源拿到的响应可能晚于用户的切换操作，
+    // 落地前要能判断"用户还在不在这个会话上"（state 在异步闭包里是旧值）。
+    const currentChatIdRef = useRef<string | null>(null)
+    useEffect(() => {
+        currentChatIdRef.current = currentChatId
+    }, [currentChatId])
+
+    // 拉第一页并落地。既用于"缓存未命中"的阻塞路径，也用于"缓存放久了"的后台回源。
+    const fetchAndApplyMessages = useCallback(
+        async (chatId: string) => {
+            try {
+                const res = await fetch(`/api/chats/${chatId}/messages?limit=10`)
+                if (!res.ok) return
+                // 数据库里只有 content、没有 parts，必须经 row → UIMessage 转换，
+                // 否则 useChat 收到缺少 parts 的消息会渲染空白。
+                const data = await res.json()
+                const pageMessages = rowsToUIMessages((data.messages || []) as MessageRow[])
+                // 用户可能已经切走了：这时绝不能把结果写进当前视图
+                if (currentChatIdRef.current !== chatId) return
+                setMessages(pageMessages)
+                setChatSnapshot(chatId, pageMessages, Boolean(data.hasMore), data.nextCursor ?? null)
+            } catch (e) {
+                logEvent('error', 'chat.messagesFetchFailed', {
+                    chatId,
+                    error: e instanceof Error ? e.message : String(e),
+                })
+            }
+        },
+        [setMessages, setChatSnapshot],
+    )
+
+    // 打开某个会话的**唯一入口**：onSelectChat 与「挂载时恢复上次会话」都走这里。
+    //
+    // 顺序必须确定：先清空、再切 id、最后载入。
+    // 为什么不能交给 useChat 内部的 effect 去比较 chatId：
+    // 那个 effect 会在**历史载入之后**才跑，把刚写进去的消息一起清掉。
+    // 实测日志：
+    //   拉取历史成功 { convertedCount: 6 }
+    //   reset effect { from: undefined, to: '<id>', messagesBeforeClear: 6 }
+    //   messages changed -> 6
+    //   messages changed -> 0     ← 界面空白
+    const openChat = useCallback(
+        async (chatId: string) => {
+            reset()
+            // 同步镜像，让随后的（可能是后台的）回源知道"当前就是它"
+            currentChatIdRef.current = chatId
+            setCurrentChatId(chatId)
+            rememberLastChat(chatId)
+
+            const chatSummary = chats.find((item) => item.id === chatId)
+            if (chatSummary?.model) {
+                setSelectedModelId(chatSummary.model)
+                document.cookie = `selectedModel=${chatSummary.model}; path=/; max-age=31536000`
+            }
+            // 模式的唯一真相在数据库：切会话时跟随后端返回的值，
+            // 而不是沿用上一个会话的 mode——否则 UI 显示的模式会与真实生效的不一致。
+            const chatMode = (chatSummary?.mode as ChatMode | undefined) ?? 'inspector'
+            setMode(chatMode)
+            setCurrentChatMode(chatMode)
+
+            const cached = messageCache[chatId]
+            // 空快照视为未命中：即使缓存里已经躺着一条被写坏的"空"条目，
+            // 也会自然回落到下面那条正常拉取路径，不需要用户手动清缓存。
+            if (cached && cached.recentMessages.length > 0) {
+                // 缓存本身就是 UIMessage（store 已改为存 UIMessage），直接灌回 useChat
+                setMessages(cached.recentMessages)
+                setIsOpen(false)
+                // 缓存只负责"立刻有内容"，新鲜度交给后台：
+                // 放久了才回源，短时间内来回切（A→B→A）不重复打库。
+                if (Date.now() - cached.loadedAt > SNAPSHOT_TTL_MS) {
+                    void fetchAndApplyMessages(chatId)
+                }
+                return
+            }
+
+            // 缓存未命中 / 空快照：这一次必须等它（没有别的内容可显示）
+            await fetchAndApplyMessages(chatId)
+            setIsOpen(false)
+        },
+        [
+            chats,
+            messageCache,
+            reset,
+            setMessages,
+            fetchAndApplyMessages,
+            setSelectedModelId,
+            setMode,
+        ],
+    )
+
     const onNewChat = async () => {
         // 中断当前对话
         stop()
@@ -169,6 +296,8 @@ export function Chat() {
         const chat = await res.json()
         upsertChat(chat)
         clearChatSnapshot(chat.id)
+        rememberLastChat(chat.id)
+        currentChatIdRef.current = chat.id
         setCurrentChatId(chat.id)
         // 新会话入库时的 mode 就是用户当前选的那个；currentChatMode 用于
         // 「用户是否改过模式」的判断，必须与库里的值一致
@@ -184,49 +313,7 @@ export function Chat() {
             // 中断当前流
             stop()
             setInput('')
-            // 显式清空上一个会话的消息，并把当前会话切过去。
-            //
-            // 为什么必须显式做，而不是靠 useChat 内部的 effect 比较 chatId：
-            // 那个 effect 会在**加载完历史之后**才跑，把刚写入的消息一起清掉。
-            // 实测日志：
-            //   拉取历史成功 { convertedCount: 6 }
-            //   reset effect { from: undefined, to: '<id>', messagesBeforeClear: 6 }
-            //   messages changed -> 6
-            //   messages changed -> 0     ← 界面空白
-            // 显式调用让「先清空、再加载」的顺序确定下来，不再依赖 effect 时机。
-            reset()
-            setCurrentChatId(chatId)
-
-            const chatSummary = chats.find((item) => item.id === chatId)
-            if (chatSummary?.model) {
-                setSelectedModelId(chatSummary.model)
-                document.cookie = `selectedModel=${chatSummary.model}; path=/; max-age=31536000`
-            }
-            // 模式的唯一真相在数据库：切会话时跟随后端返回的值，
-            // 而不是沿用上一个会话的 mode——否则 UI 显示的模式会与真实生效的不一致。
-            const chatMode = (chatSummary?.mode as ChatMode | undefined) ?? 'inspector'
-            setMode(chatMode)
-            setCurrentChatMode(chatMode)
-
-            const cached = messageCache[chatId]
-            if (cached) {
-                // 缓存本身就是 UIMessage（store 已改为存 UIMessage），直接灌回 useChat
-                setMessages(cached.recentMessages)
-                setIsOpen(false)
-                // 如果有缓存就不请求
-                return
-            }
-
-            const res = await fetch(`/api/chats/${chatId}/messages?limit=10`)
-            if (!res.ok) return
-            // 获取该id下的历史记录。
-            // 数据库里只有 content、没有 parts，必须经 row → UIMessage 转换，
-            // 否则 useChat 收到缺少 parts 的消息会渲染空白。
-            const data = await res.json()
-            const pageMessages = rowsToUIMessages((data.messages || []) as MessageRow[])
-            setMessages(pageMessages)
-            setChatSnapshot(chatId, pageMessages, Boolean(data.hasMore), data.nextCursor ?? null)
-            setIsOpen(false)
+            await openChat(chatId)
         } catch (e) {
             logEvent('error', 'chat.selectFailed', {
                 chatId,
@@ -240,12 +327,40 @@ export function Chat() {
         if (!currentChatId) return
         // 流式过程中不快照，避免每帧写 Zustand；流结束后再落一次
         if (isBusy) return
+        // 空列表不是合法快照。
+        // 切换会话时必然出现"chatId 已经换过去、messages 还是空"的那一帧，
+        // 一旦写进缓存，这个会话在缓存里就变成"空的"，而 onSelectChat 命中
+        // 缓存就不再回源 —— 于是切回来永远是空白，只能靠整页刷新救回来。
+        if (messages.length === 0) return
 
-        const hasMore = currentSnapshot?.hasMore ?? false
-        const nextCursor = currentSnapshot?.nextCursor ?? null
+        // 游标必须从 store 现读：渲染期的 currentSnapshot 是上一轮的闭包值，
+        // 用它会把 hasMore/nextCursor 写死成 false/null，导致向上翻页在你
+        // 刚翻过一页之后立刻失效（早于第一页的消息就再也看不到）。
+        const snapshot = useChatCacheStore.getState().messageCache[currentChatId]
 
-        setChatSnapshot(currentChatId, messages, hasMore, nextCursor)
-    }, [currentChatId, messages, isBusy, currentSnapshot?.hasMore, currentSnapshot?.nextCursor, setChatSnapshot])
+        setChatSnapshot(currentChatId, messages, snapshot?.hasMore ?? false, snapshot?.nextCursor ?? null)
+    }, [currentChatId, messages, isBusy, setChatSnapshot])
+
+    // 挂载时恢复「上一次打开的会话」。
+    // 语境：任何一次热更新（agent 改的往往正是这个文件）都会让本组件的 state 归零，
+    // 而模块级的 messageCache 不会 —— 结果就是"缓存里明明有消息，眼前却是空的"。
+    // 这里只负责把 id 补回来，内容交给 openChat 从缓存里取（命中即瞬间还原）。
+    const restoreOnceRef = useRef(false)
+    useEffect(() => {
+        if (restoreOnceRef.current) return
+        if (!chatsLoaded) return
+        if (currentChatIdRef.current) return
+        const saved = readLastChat()
+        if (!saved) return
+        // 会话可能已被删除、或不在返回的列表里：清掉记录，别恢复到一个不存在的会话
+        if (!chats.some((item) => item.id === saved)) {
+            forgetLastChat()
+            return
+        }
+        restoreOnceRef.current = true
+        logEvent('info', 'chat.restoreLastChat', { chatId: saved })
+        void openChat(saved)
+    }, [chats, chatsLoaded, openChat])
 
     // 向上滚动加载
     const loadOlderMessages = useCallback(async () => {

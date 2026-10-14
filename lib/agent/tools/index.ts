@@ -20,12 +20,11 @@ import { GitLogInputSchema, gitLog } from './gitLog'
 import { GitDiffInputSchema, gitDiff } from './gitDiff'
 import { readSensitiveFileTool } from './readSensitiveFile'
 import {
-  createPatchProposalTool,
-  setCurrentRunId,
+  createPatchProposalTool
 } from './patchProposal'
 import { applyApprovedPatchTool } from '@/lib/agent/tools/applyPatch'
 import { setAgentRequestContext } from '@/lib/agent/runContext'
-
+import { runValidationTool } from './runValidation'
 
 
 
@@ -78,6 +77,7 @@ export const baseTools = {
   // 它自带 needsApproval: true，不需要在这里重复声明。
   readSensitiveFile: readSensitiveFileTool,
   applyApprovedPatch: applyApprovedPatchTool,
+  runApprovedValidation: runValidationTool,
 }
 
 /**
@@ -188,6 +188,7 @@ export function createAgentTools(guard: CallGuard, traceId = 'no-trace', runId =
     readSensitiveFile: guardTool('readSensitiveFile', baseTools.readSensitiveFile, guard, traceId, runId),
     createPatchProposal: guardTool('createPatchProposal', baseTools.createPatchProposal, guard, traceId, runId),
     applyApprovedPatch: guardTool('applyApprovedPatch', baseTools.applyApprovedPatch, guard, traceId, runId),
+    runApprovedValidation: guardTool('runApprovedValidation', baseTools.runApprovedValidation, guard, traceId, runId),
   }
 }
 
