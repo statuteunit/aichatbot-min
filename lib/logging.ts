@@ -31,11 +31,25 @@ export function newTraceContext(): {
 }
 
 /**
- * 结构化日志。纪律：只记 id / 状态 / 计数 / 耗时，
+ * 结构化日志。机制：只记 id / 状态 / 计数 / 耗时，
  * 禁止记录消息内容与文件内容（日志不能成为泄密面）。
  */
+const SECRET_PATTERNS: readonly [RegExp, string][] = [
+  [/sk-[A-Za-z0-9_-]{8,}/g, 'sk-***'],
+  [/Bearer\s+[A-Za-z0-9._-]{8,}/gi, 'Bearer ***'],
+  [/gh[pousr]_[A-Za-z0-9]{8,}/g, 'gh***'],
+  [/"((?:apiKey|api_key|accessToken|token|secret|password))"\s*:\s*"[^"]*"/gi, '"$1":"***"'],
+]
+
+export function redact(line: string): string {
+  let out = line
+  for (const [pattern, replacement] of SECRET_PATTERNS) out = out.replace(pattern, replacement)
+  return out
+}
+
 export function logEvent(level: Level, event: string, fields: Record<string, unknown> = {}) {
-  const line = JSON.stringify({ ts: new Date().toISOString(), level, event, ...fields })
+  // 脱敏必须在 JSON.stringify **之后**：否则嵌套对象里的值不会被看到
+  const line = redact(JSON.stringify({ ts: new Date().toISOString(), level, event, ...fields }))
   if (level === 'error') console.error(line)
   else if (level === 'warn') console.warn(line)
   else console.log(line)

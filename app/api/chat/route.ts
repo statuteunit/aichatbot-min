@@ -27,6 +27,7 @@ import { workspaceIdForCurrentCheckout } from '@/lib/agent/workspace'
 import { setAgentRequestContext } from '@/lib/agent/runContext'
 import { isRetryableDbError, retryTransient } from '@/lib/agent/dbRetry'
 import { updateAgentRunStatus, isAgentRunUsable, ensureToolCallRun } from '@/lib/repositories/proposalRepository'
+import { takeToken } from '@/app/api/rateLimit'
 
 /**
  * 与 OpenRouter 的 OpenAI 兼容层对接。
@@ -99,6 +100,20 @@ function isFinalized(message: UIMessage): boolean {
  * 成本优势被吃掉。按字符数触发才能让"多少内容换一次摘要"变得可预期。
  */
 const SUMMARY_TRIGGER_CHARS = 4000
+
+// 流传输中的错误分类函数，只回传自定义枚举值，不回传原始的message，防止敏感信息泄露
+function classifyStreamError(
+    error: unknown,
+): 'RATE_LIMITED' | 'UPSTREAM_UNAVAILABLE' | 'CONTEXT_TOO_LONG' | 'AUTH_FAILED' | 'UNKNOWN' {
+    const text = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+    if (/rate limit|free-models-per-day|quota|insufficient_quota/i.test(text)) return 'RATE_LIMITED'
+    if (/401|unauthorized|invalid api key|no auth credentials/i.test(text)) return 'AUTH_FAILED'
+    if (/context length|too many tokens|maximum context/i.test(text)) return 'CONTEXT_TOO_LONG'
+    if (/AI_RetryError|APICallError|ECONNRESET|ETIMEDOUT|ENOTFOUND|fetch failed/i.test(text)) {
+        return 'UPSTREAM_UNAVAILABLE'
+    }
+    return 'UNKNOWN'
+}
 
 /**
  * 判断是否需要刷新摘要，需要就刷新并落库。
@@ -272,12 +287,30 @@ export const POST = withApiLogging({
         const requestId = getRequestId(req)
         const userId = await requireUserId()
 
+        if (!takeToken(`chat:${userId}`, { capacity: 20, refillPerSecond: 20 / 60 })) {
+            logEvent('warn', 'chat.rateLimited', { requestId, userId })
+            return Response.json(
+                {
+                    error: 'RATE_LIMITED',
+                    message: '请求过于频繁，请稍后再试',
+                    requestId,
+                    retryable: true,
+                },
+                { status: 429 },
+            )
+        }
+
         const parsed = ChatRequestSchema.safeParse(await req.json().catch(() => null))
         if (!parsed.success) {
             return Response.json({ error: 'INVALID_BODY', requestId }, { status: 400 })
         }
 
         const { messages, chatId } = parsed.data
+        logEvent('info', 'chat.requestShape', {
+            ...traceFields(requestId),
+            hasChatId: Boolean(chatId),
+            messageCount: messages.length,
+        })
         const model = resolveModelId(parsed.data.model)
         const uiMessages = messages as UIMessage[]
 
@@ -475,6 +508,14 @@ export const POST = withApiLogging({
             // 没有它，onFinish 里的 responseMessage.id 不可靠，落库会拿到不稳定的主键。
             originalMessages: uiMessages,
             sendReasoning: false,
+            // 增加错误分类字段
+            onError: (error) => {
+                const code = classifyStreamError(error)
+                logEvent('error', 'chat.clientErrorExposed', { requestId, code })
+                // 带上 requestId：界面上的这次失败要能和服务端日志对上。
+                // 它是每请求生成的 UUID，本来就会出现在 API 错误体里，不含敏感信息。
+                return JSON.stringify({ code, requestId })
+            },
             onFinish: async ({ responseMessage, isAborted }) => {
                 const text = extractTextFromParts(responseMessage.parts)
 

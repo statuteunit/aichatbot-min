@@ -8,6 +8,7 @@ import { Textarea } from '@/components/ui/textarea';
 interface ChatInputProps {
   input: string;
   isLoading: boolean;
+  disabled?: boolean;
   onInputChange: (value: string) => void;
   onSubmit: () => void;
   onStop: () => void
@@ -16,6 +17,7 @@ interface ChatInputProps {
 export function ChatInput({
   input,
   isLoading,
+  disabled = false,
   onInputChange,
   onSubmit,
   onStop
@@ -24,7 +26,7 @@ export function ChatInput({
   // 表单提交
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (input.trim() && !isLoading) {
+    if (input.trim() && !isLoading && !disabled) {
       onSubmit();
     }
   };
@@ -33,7 +35,7 @@ export function ChatInput({
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (input.trim() && !isLoading) {
+      if (input.trim() && !isLoading && !disabled) {
         onSubmit();
       }
     }
@@ -46,8 +48,8 @@ export function ChatInput({
           value={input}
           onChange={(e) => onInputChange(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="输入消息... (Enter 发送, Shift+Enter 换行)"
-          disabled={isLoading}
+          placeholder={disabled ? "正在恢复会话" : "输入消息... (Enter 发送, Shift+Enter 换行)"}
+          disabled={isLoading || disabled}
           className="flex-1"
           rows={1}
         />

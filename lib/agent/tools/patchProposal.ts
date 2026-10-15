@@ -27,6 +27,7 @@ import {
   getCurrentTraceId,
 } from '../runContext'
 import { ensureAgentRun, isAgentRunUsable } from '@/lib/repositories/proposalRepository'
+import { normalizeHunkHeaders } from '@/lib/agent/normalizeDiff'
 
 function firstPathFromDiff(diff: string): string | null {
   for (const line of diff.split(/\r?\n/)) {
@@ -44,10 +45,28 @@ export const PROPOSAL_TTL_MS = 30 * 60 * 1000
 /** 测试建议：不落执行，只作为审查信息 */
 export const PatchProposalInputSchema = z.object({
   diff: z.string().min(1).meta({
-    description:
-      '标准 unified diff 全文（含 diff --git / --- / +++ / @@ 头）。' +
-      '**必须是可审查的统一 Diff**，不支持整文件替换、不包含删除或重命名文件的操作。' +
-      '涉及文件不超过 10 个，总大小不超过 500KB。',
+    description: [
+      '标准 unified diff 全文。格式必须逐字照抄下面的模板：',
+      '',
+      'diff --git a/<仓库相对路径> b/<仓库相对路径>',
+      '--- a/<仓库相对路径>',
+      '+++ b/<仓库相对路径>',
+      '@@ -<旧起始行>,<旧行数> +<新起始行>,<新行数> @@',
+      ' 上下文行（行首必须是一个空格）',
+      '-被删除的行（行首是减号）',
+      '+新增的行（行首是加号）',
+      '',
+      '行数规则（服务端会逐字校验，算错就会被拒）：',
+      '- 旧行数 = 本 hunk 内「行首空格」的行数 + 「行首减号」的行数',
+      '- 新行数 = 本 hunk 内「行首空格」的行数 + 「行首加号」的行数',
+      '- 标记字符本身不计入内容；上下文行、上下文空行都必须带行首那个空格',
+      '- **起始行号写你 readFile 看到的那一行即可**（服务端允许 ±5 行偏差，按内容定位），',
+      '  但**行数错一个就整份提案被拒**。写完必须自己数一遍再提交。',
+      '- 每个 hunk 至少保留 3 行上下文；不要用省略号或其他缩写形式',
+      '- 禁止出现单一个 `@@`（没有行号）：服务端无法定位，会直接拒绝',
+      '',
+      '限制：不删除、不重命名文件；文件数 ≤ 10；总大小 ≤ 500KB。',
+    ].join('\n'),
   }),
   summary: z.string().min(1).max(500).meta({
     description: '一句话说明这次改动做什么、为什么。审查者先看这句。',
@@ -90,7 +109,16 @@ export async function createPatchProposal(
 ): Promise<PatchProposalResult | ReturnType<typeof toToolErrorResult>> {
   try {
     // 校验 diff —— 不可信输入的唯一入口
-    const validation = parseAndValidateDiff(input.diff)
+    // 按正文重算hunk行数
+    const normalized = normalizeHunkHeaders(input.diff)
+    if (normalized.repairedHunks > 0 || normalized.malformedHeaders.length > 0) {
+      logEvent('info', 'agent.diffHunkRepaired', {
+        repairedHunks: normalized.repairedHunks,
+        malformedHeaders: normalized.malformedHeaders,
+        runId: ctx.runId,
+      })
+    }
+    const validation = parseAndValidateDiff(normalized.diff)
     if (!validation.ok) {
       // 返回结构化错误而不是抛异常：模型能读到 code 并据此修正 diff，
       // 而不是收到一个"工具执行失败"的黑盒

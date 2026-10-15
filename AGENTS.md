@@ -13,7 +13,6 @@
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.2",
     "@radix-ui/react-slot": "^1.2.4",
-    "@vercel/postgres": "^0.10.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "next": "16.2.1",

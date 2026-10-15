@@ -20,7 +20,6 @@
     "@ai-sdk/react": "^4.0.129",
     "@auth/prisma-adapter": "^2.11.2",
     "@radix-ui/react-slot": "^1.2.4",
-    "@vercel/postgres": "^0.10.0",
     "ai": "^6.0.286",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

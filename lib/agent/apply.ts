@@ -86,7 +86,7 @@ export async function applyApprovedPatch(input: ApplyProposalInput): Promise<App
     return { ok: false, code: 'PROPOSAL_NOT_APPROVED', message: '提案不存在或不属于该用户' }
   }
 
-  // ① 状态与有效期
+  // 状态与有效期
   if (proposal.status !== 'approved') {
     return {
       ok: false,
@@ -99,7 +99,7 @@ export async function applyApprovedPatch(input: ApplyProposalInput): Promise<App
     return { ok: false, code: 'PROPOSAL_EXPIRED', message: '提案已过期，请重新生成后再批准' }
   }
 
-  // ② 批准绑定：批准时的 diffHash 必须与当前一致
+  // 批准绑定：批准时的 diffHash 必须与当前一致
   if (!proposal.approvedDiffHash || proposal.approvedDiffHash !== proposal.diffHash) {
     // 已批准的内容与库里的 diff 不一致 → 这是篡改或写入错误，必须拒绝并留痕
     logEvent('error', 'agent.approvalHashMismatch', {
@@ -114,7 +114,7 @@ export async function applyApprovedPatch(input: ApplyProposalInput): Promise<App
     }
   }
 
-  // ③ 工作区标识
+  // 工作区标识
   if (!workspaceMatches(proposal)) {
     return {
       ok: false,
@@ -123,7 +123,7 @@ export async function applyApprovedPatch(input: ApplyProposalInput): Promise<App
     }
   }
 
-  // ④ 基线冲突检测：重新算一遍当前磁盘的状态
+  // 基线冲突检测：重新算一遍当前磁盘的状态
   const baseFileHashes = (proposal.baseFileHashes ?? {}) as Record<string, string>
   const targetFileHashes = (proposal.targetFileHashes ?? {}) as Record<string, string>
   const paths = Object.keys(baseFileHashes)
@@ -144,7 +144,7 @@ export async function applyApprovedPatch(input: ApplyProposalInput): Promise<App
     }
   }
 
-  // ⑤ 幂等：全部文件都已在目标状态 → 直接成功，一个字节都不写
+  // 幂等：全部文件都已在目标状态 → 直接成功，一个字节都不写
   const alreadyApplied = paths.length > 0 && paths.every((p) => currentHashes[p] === targetFileHashes[p])
   if (alreadyApplied) {
     await markProposalApplied(proposal.id)
@@ -152,7 +152,7 @@ export async function applyApprovedPatch(input: ApplyProposalInput): Promise<App
     return { ok: true, appliedFiles: [], targetFileHashes, idempotent: true }
   }
 
-  // ⑥ 部分已应用 = 上一次写到一半（极罕见）→ 拒绝，让用户明确处理，
+  // 部分已应用 = 上一次写到一半（极罕见）→ 拒绝，让用户明确处理，
   //    不要"接着写完"，因为半改状态下的基线无法信任
   const partiallyApplied = paths.filter((p) => currentHashes[p] === targetFileHashes[p])
   if (partiallyApplied.length > 0) {
@@ -167,7 +167,7 @@ export async function applyApprovedPatch(input: ApplyProposalInput): Promise<App
     }
   }
 
-  // ⑦ 在内存里重建目标内容（内容层面的冲突在这里会被发现）
+  // 在内存里重建目标内容（内容层面的冲突在这里会被发现）
   const baseContents: Record<string, string> = {}
   for (const p of paths) {
     const text = await readWorkspaceText(p)
@@ -184,7 +184,7 @@ export async function applyApprovedPatch(input: ApplyProposalInput): Promise<App
     return { ok: false, code: built.code, message: built.message }
   }
 
-  // ⑧ 落盘
+  // 落盘
   const writeResult = await writeAtomically(built.plans, resolveAbsInWorkspace)
   if (!writeResult.ok) {
     await markProposalFailed(proposal.id, writeResult.message)
@@ -192,7 +192,7 @@ export async function applyApprovedPatch(input: ApplyProposalInput): Promise<App
     return { ok: false, code: 'INTERNAL_ERROR', message: `写入失败且已回滚：${writeResult.message}` }
   }
 
-  // ⑨ 写后校验：读回来比对 hash，确认磁盘真的是目标状态
+  // 写后校验：读回来比对 hash，确认磁盘真的是目标状态
   const verified = await hashWorkspaceFiles(built.plans.map((p) => p.path))
   const mismatched = built.plans.filter((p) => verified[p.path] !== p.targetHash).map((p) => p.path)
   if (mismatched.length > 0) {
@@ -203,7 +203,8 @@ export async function applyApprovedPatch(input: ApplyProposalInput): Promise<App
     return { ok: false, code: 'HUNK_CONTEXT_MISMATCH', message: `写后校验失败并已回滚：${mismatched.join(', ')}` }
   }
 
-  await markProposalApplied(proposal.id)
+  // 写成功，更新提案状态，非幂等
+  await markProposalApplied(proposal.id, targetFileHashes)
   logEvent('info', 'agent.applySuccess', {
     proposalId: proposal.id,
     fileCount: built.plans.length,

@@ -18,6 +18,7 @@
 //   已决定后卡片变成只读回执，不再显示按钮 —— 防止重复提交。
 import { useState, useEffect } from 'react'
 import { cn } from '@/lib/utils'
+import { DiffView } from '@/components/diffView'
 
 /** 工具审批的状态机（与 AI SDK 的 ToolUIPart.state 对应） */
 export type ApprovalState =
@@ -158,10 +159,25 @@ export function ApprovalCard({
           ) : (
             <>
               <pre className="max-h-48 overflow-auto rounded bg-muted p-2 text-xs">{detail.treeText}</pre>
-              <details>
-                <summary className="cursor-pointer text-xs">查看完整 diff</summary>
-                <pre className="mt-1 max-h-80 overflow-auto rounded bg-muted p-2 text-xs">{detail.proposal.diff}</pre>
+              <details className="mt-2">
+                <summary className="cursor-pointer text-xs text-gray-600 hover:text-gray-900">查看完整 diff</summary>
+                <div className="mt-2">
+                  <DiffView diff={detail.proposal.diff} maxLines={200} />
+                </div>
               </details>
+
+              {/* 详情页承载卡片放不下的东西：状态徽章、文件树、审批人/时间、将来的回滚入口。
+                  页面路由是 app/agent/proposals/[id]/page.tsx —— 注意**不在** app/api 下，
+                  那里是同段的 route.ts（API），两者不能共存。
+                  新开标签是为了不打断对话（卡片还要用来点批准）。 */}
+              <a
+                className="inline-block text-xs text-blue-600 underline hover:text-blue-700"
+                href={`/agent/proposals/${encodeURIComponent(proposalId)}`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                打开完整提案页（Diff · 文件树 · 审批记录）
+              </a>
             </>
           )}
         </div>

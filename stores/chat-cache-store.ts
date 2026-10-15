@@ -33,6 +33,17 @@ interface ChatCacheState {
   chatsLoaded: boolean
   messageCache: Record<string, ChatMessageCache>
 
+  /**
+   * 当前打开的会话 id。
+   *
+   * 为什么放在 store 而不是只留在组件 state：
+   * 任何一次热更新（被改的往往正是 components/chat.tsx）都会让 React 的 state
+   * 归零，而模块级的 store 不会。少了它，重挂载后 currentChatId 变成 null，
+   * 界面显示成"新会话"，缓存里明明有消息却是一片空白，只能靠点一次侧边栏救回来。
+   */
+  activeChatId: string | null
+  setActiveChatId: (chatId: string | null) => void
+
   setChats: (chats: ChatSummary[]) => void
   upsertChat: (chat: ChatSummary) => void
   removeChat: (chatId: string) => void
@@ -52,6 +63,8 @@ export const useChatCacheStore = create<ChatCacheState>((set) => ({
   chats: [],
   chatsLoaded: false,
   messageCache: {},
+  activeChatId: null,
+  setActiveChatId: (chatId) => set({ activeChatId: chatId }),
   setChats: (chats) =>
     set({
       chats: Array.isArray(chats) ? chats : [],

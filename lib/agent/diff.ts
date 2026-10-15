@@ -161,8 +161,8 @@ export function parseAndValidateDiff(diff: string): DiffValidation {
         ok: false,
         code: 'HUNK_LINE_COUNT_MISMATCH',
         message:
-          `hunk 行数不符：声明 -${expectOld}/+${expectNew}，` +
-          `实际 -${seenOld}/+${seenNew}。diff 被截断或伪造。`,
+          `hunk 行数不符：声明 -${expectOld}/+${expectNew}，实际 -${seenOld}/+${seenNew}。` +
+          '旧行数=上下文行+减号行，新行数=上下文行+加号行；请按这个规则重新数一遍。',
       }
     }
     inHunk = false

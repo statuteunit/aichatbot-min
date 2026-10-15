@@ -3,9 +3,7 @@
 import 'server-only'
 import { prisma } from '@/lib/db'
 import { logEvent } from '@/lib/logging'
-import { readWorkspaceFileOrNull, sha256, workspaceIdForCurrentCheckout } from '@/lib/agent/workspace'
-import path from 'node:path'
-import { getWorkspaceRoot } from '@/lib/agent/security'
+import { hashWorkspaceFile, workspaceIdForCurrentCheckout } from '@/lib/agent/workspace'
 import { retryTransient } from '@/lib/agent/dbRetry'
 
 export interface CreateProposalParams {
@@ -228,13 +226,14 @@ export async function ensureAgentRun(params: {
   let baselineHash: string | null = null
   if (params.baselinePath) {
     try {
-      const abs = path.resolve(getWorkspaceRoot(), params.baselinePath)
-      const content = await readWorkspaceFileOrNull(abs)
-      // 新增文件（不存在）也要有基线：用空内容的 hash，
-      // 与 workspace.ts 的 EMPTY_FILE_SHA256 是同一套语义。
-      baselineHash = sha256(content ?? '')
-    } catch {
-      // 读不到就当没有基线，不阻断建 run
+      baselineHash = await hashWorkspaceFile(params.baselinePath)
+    } catch (error) {
+      // 读不到就当没有基线、不阻断建 run —— 但要留痕，
+      // 否则这个分支会像以前那样静默地让 baselineHash 永远是 null
+      logEvent('warn', 'agent.baselineHashFailed', {
+        path: params.baselinePath,
+        error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+      })
       baselineHash = null
     }
   }
@@ -334,11 +333,26 @@ export async function markProposalStale(proposalId: string): Promise<void> {
 }
 
 /** 标记为已应用，并记下目标 hash（幂等判定的依据） */
-export async function markProposalApplied(proposalId: string): Promise<void> {
+export async function markProposalApplied(proposalId: string, targetFileHashes?: Record<string, string>,): Promise<void> {
   await prisma.patchProposal.update({
     where: { id: proposalId },
-    data: { status: 'applied', appliedAt: new Date() },
+    data: { status: 'applied', appliedAt: new Date(), ...(targetFileHashes ? { targetFileHashes } : {}), },
   })
+}
+
+/**
+ * 标记为已回滚。只在 revertAppliedProposal 完成写盘并校验通过后调用。
+ *
+ * 用 updateMany 而不是 update：
+ *   where 带 status:'applied' 就是状态机守卫 —— 并发的两次回滚只有一条能改到，
+ *   另一条 count === 0。先读后写在并发下会产生两个「成功」的回滚。
+ */
+export async function markProposalReverted(proposalId: string): Promise<boolean> {
+  const res = await prisma.patchProposal.updateMany({
+    where: { id: proposalId, status: 'applied' },
+    data: { status: 'reverted' },
+  })
+  return res.count > 0
 }
 
 /** 标记为失败，并记下原因（供审查面板展示"为什么没应用成功"） */

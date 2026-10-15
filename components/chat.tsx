@@ -9,12 +9,14 @@ import { ModelSelector } from "./modelSelector"
 import { ModeSelector } from "./modeSelector"
 import { Siderbar } from "./siderbar"
 import { DEFAULT_CHAT_MODEL } from "@/lib/model"
+import type { UIMessage } from 'ai'
 import type { ChatMode } from "@/lib/agent/prompt"
 import { useChatCacheStore } from '@/stores/chat-cache-store'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useMemo, useEffect, useRef, useState } from 'react'
 import { Button } from "@/components/ui/button"
 import { rowsToUIMessages, type MessageRow } from '@/lib/chat/mappers'
 import { logEvent } from '@/lib/logging'
+import { friendlyChatError } from '@/lib/chat/errorMessage'
 
 // 会话快照的"新鲜度"上限：超过这个时间才在后台回源。
 // 缓存的意义就是省掉切会话时那次 messages.GET（实测 5~12s），
@@ -61,8 +63,16 @@ export function Chat() {
     const [mode, setMode] = useState<ChatMode>('inspector')
     // 会话真实生效的模式（来自数据库/创建响应），用于判断"用户是否改了模式"
     const [currentChatMode, setCurrentChatMode] = useState<ChatMode>('inspector')
-    const [currentChatId, setCurrentChatId] = useState<string | null>(null)
+    const [currentChatId, setCurrentChatId] = useState<string | null>(() =>
+        // 初值取自模块级 store，而不是 null。
+        // 热更新（agent 改的往往正是本文件）会让本组件重挂载、React state 全部归零，
+        // 而模块级的 store 不会。少了这一句，重挂载后就变成"新会话"：
+        // 缓存里明明有消息，眼前却是空白。
+        useChatCacheStore.getState().activeChatId,
+    )
     const [isOpen, setIsOpen] = useState(false)
+    // 会话确定才能落库
+    const [sessionReady, setSessionReady] = useState(false)
     // 从状态库取出状态和方法
     const {
         chats,
@@ -89,6 +99,18 @@ export function Chat() {
 
     const currentSnapshot = currentChatId ? messageCache[currentChatId] : undefined
 
+    // 重挂载时用来初始化 useChat 的消息，只在挂载时算一次。
+    //
+    // 为什么需要：热更新重挂载后 messages 是本组件里的 React state，会归零；
+    // 只把 id 补回来还不够——异步回源落地之前那一帧仍是空的。
+    // useChat 把 messages 当**初始值**用（内部 Chat 实例只在 useMemo(..., [chatKey])
+    // 里创建一次），所以这里同步灌进去不会与后续的 setMessages 冲突。
+    const [initialMessages] = useState<UIMessage[]>(() => {
+        const activeId = useChatCacheStore.getState().activeChatId
+        if (!activeId) return []
+        return useChatCacheStore.getState().messageCache[activeId]?.recentMessages ?? []
+    })
+
     // useChat 现在来自 @ai-sdk/react（方案 A）：
     // 消息形状是 UIMessage（有 parts），状态由 status 直接给出，
     // 落库由服务端 /api/chat 的 onFinish 负责——客户端不再写消息。
@@ -104,11 +126,20 @@ export function Chat() {
         setMessages,
         reset,
         respondToApproval,
+        error,
     } = useChat({
         model: selectedModelId,
         chatId: currentChatId ?? undefined,
         mode,
+        // 缓存里有这个会话的消息时，从第一帧起就有内容
+        initialMessages,
     })
+
+    // 流错误处理的展示。
+    // ⚠ 必须写在 useChat **之后**：error 是它返回的绑定，
+    // 写在前面会在渲染期读到还没初始化的变量
+    // （ReferenceError: Cannot access 'error' before initialization）。
+    const friendly = useMemo(() => friendlyChatError(error?.message), [error])
 
     // 拉取所有chats
     const loadChats = useCallback(async (force = false) => {
@@ -136,7 +167,31 @@ export function Chat() {
         wasBusyRef.current = isBusy
     }, [isBusy, loadChats])
 
-    const handleSubmit = () => {
+    const handleSubmit = async () => {
+        if (!sessionReady) return
+        // 没有会话id自动创建
+        if (!currentChatIdRef.current) {
+            try {
+                const res = await fetch('/api/chats', {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ model: selectedModelId }),
+                })
+                if (!res.ok) {
+                    logEvent('error', 'chat.createChatFailed', { status: res.status })
+                    return
+                }
+                const data = (await res.json()) as { chat?: { id?: string } }
+                const newId = data.chat?.id
+                if (!newId) return
+                await openChat(newId)
+            } catch (error) {
+                logEvent('error', 'chat.createChatFailed', {
+                    error: error instanceof Error ? error.message : String(error),
+                })
+                return
+            }
+        }
         sendMessage(input)
     }
 
@@ -197,6 +252,14 @@ export function Chat() {
         currentChatIdRef.current = currentChatId
     }, [currentChatId])
 
+    // 切换"当前会话"的唯一写入口：ref 镜像 + React state + 模块级 store 三处同步。
+    // 分开写早晚会漏一处，而漏掉 store 的后果就是热更新重挂载后会话消失。
+    const selectChat = useCallback((chatId: string | null) => {
+        currentChatIdRef.current = chatId
+        setCurrentChatId(chatId)
+        useChatCacheStore.getState().setActiveChatId(chatId)
+    }, [])
+
     // 拉第一页并落地。既用于"缓存未命中"的阻塞路径，也用于"缓存放久了"的后台回源。
     const fetchAndApplyMessages = useCallback(
         async (chatId: string) => {
@@ -221,6 +284,36 @@ export function Chat() {
         [setMessages, setChatSnapshot],
     )
 
+    // 挂载时"从缓存补齐"。
+    //
+    // 为什么需要：热更新重挂载后 id 与消息已由上面的 useState 初值同步拿回来，
+    // 但还有两件事拿不到：
+    //   ① model / mode 是会话级设置，只存在 chats 摘要里。不补回来的话，
+    //      用户接着发消息会用默认模型与默认模式，而界面看起来毫无异常；
+    //   ② 缓存可能已经放旧了，需要一次后台回源（只回源、不清空，
+    //      回源失败也不影响已经渲染出来的内容）。
+    // 只在挂载时跑一次，之后的会话切换全部由 openChat 负责。
+    useEffect(() => {
+        const chatId = useChatCacheStore.getState().activeChatId
+        if (!chatId) return
+
+        const summary = useChatCacheStore.getState().chats.find((item) => item.id === chatId)
+        if (summary?.model) {
+            setSelectedModelId(summary.model)
+            document.cookie = `selectedModel=${summary.model}; path=/; max-age=31536000`
+        }
+        const restoredMode = (summary?.mode as ChatMode | undefined) ?? 'inspector'
+        setMode(restoredMode)
+        setCurrentChatMode(restoredMode)
+
+        const cached = useChatCacheStore.getState().messageCache[chatId]
+        if (!cached || cached.recentMessages.length === 0) return
+        // loadedAt 必须在这一刻读：下面的快照 effect 会用 messages 把它刷成"现在"，
+        // 那之后就再也判断不出这份缓存到底放了多久。
+        if (Date.now() - cached.loadedAt <= SNAPSHOT_TTL_MS) return
+        void fetchAndApplyMessages(chatId)
+    }, [fetchAndApplyMessages])
+
     // 打开某个会话的**唯一入口**：onSelectChat 与「挂载时恢复上次会话」都走这里。
     //
     // 顺序必须确定：先清空、再切 id、最后载入。
@@ -234,9 +327,9 @@ export function Chat() {
     const openChat = useCallback(
         async (chatId: string) => {
             reset()
-            // 同步镜像，让随后的（可能是后台的）回源知道"当前就是它"
-            currentChatIdRef.current = chatId
-            setCurrentChatId(chatId)
+            // 三处一起写：ref（给异步回源判断"用户还在不在这个会话上"）、
+            // React state、模块级 store（给热更新重挂载用）
+            selectChat(chatId)
             rememberLastChat(chatId)
 
             const chatSummary = chats.find((item) => item.id === chatId)
@@ -277,6 +370,7 @@ export function Chat() {
             fetchAndApplyMessages,
             setSelectedModelId,
             setMode,
+            selectChat,
         ],
     )
 
@@ -297,8 +391,7 @@ export function Chat() {
         upsertChat(chat)
         clearChatSnapshot(chat.id)
         rememberLastChat(chat.id)
-        currentChatIdRef.current = chat.id
-        setCurrentChatId(chat.id)
+        selectChat(chat.id)
         // 新会话入库时的 mode 就是用户当前选的那个；currentChatMode 用于
         // 「用户是否改过模式」的判断，必须与库里的值一致
         if (chat.mode) {
@@ -349,17 +442,26 @@ export function Chat() {
     useEffect(() => {
         if (restoreOnceRef.current) return
         if (!chatsLoaded) return
-        if (currentChatIdRef.current) return
+        if (currentChatIdRef.current) {
+            setSessionReady(true)
+            return
+        }
         const saved = readLastChat()
-        if (!saved) return
+        if (!saved) {
+            // 没有"上一次的会话"——不是恢复场景，立刻放行
+            setSessionReady(true)
+            return
+        }
         // 会话可能已被删除、或不在返回的列表里：清掉记录，别恢复到一个不存在的会话
         if (!chats.some((item) => item.id === saved)) {
             forgetLastChat()
+            setSessionReady(true)
             return
         }
         restoreOnceRef.current = true
         logEvent('info', 'chat.restoreLastChat', { chatId: saved })
-        void openChat(saved)
+        // finally 而不是 then：openChat 里任何一步抛了，都不能把用户永久挡在输入框外
+        void openChat(saved).finally(() => setSessionReady(true))
     }, [chats, chatsLoaded, openChat])
 
     // 向上滚动加载
@@ -462,6 +564,28 @@ export function Chat() {
                     onReload={() => { void regenerate() }}
                     onApprovalResponse={respondToApproval}
                 />
+
+                {error ? (
+                    <div className="mx-4 mb-2 flex items-start justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                        <div className="flex-1">
+                            <p>{friendly.message}</p>
+                            {friendly.requestId ? (
+                                <p className="mt-1 font-mono text-xs text-red-500/80">
+                                    请求 ID：{friendly.requestId}
+                                </p>
+                            ) : null}
+                        </div>
+                        {friendly.retryable ? (
+                            <button
+                                type="button"
+                                onClick={() => void regenerate()}
+                                className="shrink-0 rounded-md border border-red-300 bg-white px-2 py-1 text-xs font-medium hover:bg-red-100"
+                            >
+                                重试
+                            </button>
+                        ) : null}
+                    </div>
+                ) : null}
 
                 {/* 输入框 */}
                 <ChatInput

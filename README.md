@@ -180,3 +180,15 @@ GET  /api/agent/proposals/:proposalId
 POST /api/agent/proposals/:proposalId/apply
 POST /api/agent/proposals/:proposalId/validate
 POST /api/agent/proposals/:proposalId/revert
+
+## 上线检查
+- **依赖审计**：默认 registry 为 npmmirror，它未实现 npm 的审计端点，
+  `pnpm audit` 直接报 `ERR_PNPM_AUDIT_ENDPOINT_NOT_EXISTS`。
+  已改用：`pnpm outdated --prod` + `pnpm licenses list --prod`（均不依赖审计端点）。
+  如需真实审计：`$env:npm_config_registry='https://registry.npmjs.org/'; pnpm audit --prod --audit-level=high`。
+- **过期依赖**：`ai 6.0.286→7.0.140` 与 `@ai-sdk/openai 3.0.114→4.0.93`
+  是成对的 major 升级，**上线前不升级**——整个 agent 链路（工具审批、UIMessage parts、
+  toUIMessageStreamResponse）都建立在这套 API 上，升级必须整套回归。
+  `next` / `react` 的 minor 同样留到上线后统一处理。
+- **已移除**：`@vercel/postgres`（上游 Deprecated，且全仓库零 import；持久化走 Prisma）。
+- **未覆盖的盲区**：无自动化依赖审计、无限流压测、无端到端浏览器测试。

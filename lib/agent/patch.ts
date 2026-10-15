@@ -383,3 +383,56 @@ export function buildTargetFiles(
 function hashText(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex')
 }
+
+/**
+ * 把一份 FilePatch 反转成「撤销它」的补丁。
+ *
+ * 三条规则：
+ *   `@@ -a,b +c,d @@` 交换两侧 —— oldLines/newLines 也必须跟着换，
+ *      否则 applyHunks 的区间校验会直接 HUNK_RANGE_INVALID。
+ *   内容行的 `+` / `-` 互换，` `（上下文）不动。
+ *   `isNew` 必须清成 false：反转后它不再是「新增」而是「删除」，
+ *      而「删除」由调用方（revert.ts）单独处理，不能留在这里误导下游。
+ */
+export function reverseFilePatch(patch: FilePatch): FilePatch {
+  return {
+    ...patch,
+    isNew: false,
+    hunks: patch.hunks.map((hunk) => ({
+      oldStart: hunk.newStart,
+      oldLines: hunk.newLines,
+      newStart: hunk.oldStart,
+      newLines: hunk.oldLines,
+      lines: hunk.lines.map((line) => {
+        const marker = line[0]
+        if (marker === '+') return `-${line.slice(1)}`
+        if (marker === '-') return `+${line.slice(1)}`
+        return line // 上下文行原样保留
+      }),
+    })),
+  }
+}
+
+/**
+ * 把 FilePatch[] 渲染回 unified diff 文本。
+ *
+ * buildTargetFiles 的入口是**文本**，而「排除新增文件」这件事
+ * 只能在解析后的结构层做。先 filter 再 render，就能既复用现成的解析/应用链路，
+ * 又不触发 diff.ts 的 FILE_DELETION 校验。
+ *
+ * 路径两侧写成同一个 `a/x` / `b/x`（修改语义）：原提案能通过这些校验，
+ * 反转后路径不变，所以渲染出来的文本必然也能通过。
+ */
+export function renderUnifiedDiff(files: readonly FilePatch[]): string {
+  const out: string[] = []
+  for (const file of files) {
+    out.push(`diff --git a/${file.path} b/${file.path}`)
+    out.push(`--- a/${file.path}`)
+    out.push(`+++ b/${file.path}`)
+    for (const hunk of file.hunks) {
+      out.push(`@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`)
+      out.push(...hunk.lines)
+    }
+  }
+  return `${out.join('\n')}\n`
+}
